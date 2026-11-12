@@ -1,6 +1,6 @@
-pandas
-numpy
-matplotlib
-requests
-jupyter
-ccxt
+# Direct dependencies, pinned to the versions the notebooks were run with (Python 3.13).
+# Add a package here only when the code starts using it.
+requests==2.34.2      # HTTP calls to public APIs (mempool.space)
+pandas==3.1.1         # tables and time series
+matplotlib==3.11.2    # plots
+ipykernel==7.4.0      # lets VS Code / Jupyter run notebooks with this .venv
