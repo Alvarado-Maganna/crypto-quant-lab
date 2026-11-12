@@ -1,6 +1,6 @@
 # Crypto Quant Lab
 
-Rigorous, reproducible research on crypto trading strategies.
+Rigorous, reproducible research on crypto trading strategies. (usign AI)
 
 The goal is to learn quantitative trading and applied data science properly: every strategy starts as an explicit hypothesis, is tested out-of-sample with realistic costs, and is compared against simple benchmarks. **Failed strategies are documented as carefully as successful ones** — an honest negative result is worth more than an inflated backtest.
 
