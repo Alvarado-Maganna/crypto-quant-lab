@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+# Let tests import the repo's code as `from src.data.ohlcv import ...`.
+pythonpath = ["."]
+testpaths = ["tests"]

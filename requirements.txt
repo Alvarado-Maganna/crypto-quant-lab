@@ -4,3 +4,6 @@ requests==2.34.2      # HTTP calls to public APIs (mempool.space)
 pandas==3.1.1         # tables and time series
 matplotlib==3.11.2    # plots
 ipykernel==7.4.0      # lets VS Code / Jupyter run notebooks with this .venv
+ccxt==4.5.92          # unified client for crypto exchange APIs (OHLCV candles)
+pyarrow==26.0.1       # engine pandas uses to read/write Parquet files
+pytest==9.2.0         # runs the unit tests in tests/
