@@ -74,6 +74,33 @@ def test_recovery_not_declared_if_data_ends_before_the_hold_window():
     assert time_to_recovery(close, T0, u=0.005, hold=5 * MIN, min_traded=1) == (pd.NaT, pd.NaT)
 
 
+def test_series_that_never_leaves_the_peg():
+    close = series([1.0, 1.001, 0.999, 1.0])
+    assert minutes_off_peg(close, u=0.005) == 0
+    first, last_end, span = off_peg_span(close, u=0.005)
+    assert pd.isna(first) and pd.isna(last_end) and span == pd.Timedelta(0)
+
+
+def test_series_that_never_recovers():
+    close = series([1.0, 0.95, 0.96, 0.97, 0.98, 0.97])
+    assert time_to_recovery(close, T0 + MIN, u=0.005, hold=2 * MIN, min_traded=1) == (pd.NaT, pd.NaT)
+
+
+def test_recovery_uses_clock_time_across_missing_candles():
+    # trough at 0; minutes 1-3 missing; back in band from minute 4 on
+    idx = [T0] + [T0 + m * MIN for m in range(4, 10)]
+    close = pd.Series([0.90] + [1.0] * 6, index=idx)
+    t, d = time_to_recovery(close, T0, u=0.005, hold=3 * MIN, min_traded=3)
+    assert t == T0 + 4 * MIN and d == 4 * MIN      # 4 minutes of clock time, not 1 row
+
+
+def test_no_recovery_when_the_window_has_only_no_trade_candles():
+    close = series([0.90] + [1.0] * 6)
+    traded = series([True] + [False] * 6)          # back in band, but nobody traded
+    assert time_to_recovery(close, T0, u=0.005, hold=3 * MIN, traded=traded,
+                            min_traded=1) == (pd.NaT, pd.NaT)
+
+
 def test_share_in_band():
     assert share_in_band(series([1.0, 1.001, 0.998, 1.0]), band=0.001) == 0.75
 

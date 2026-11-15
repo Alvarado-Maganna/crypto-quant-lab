@@ -79,6 +79,9 @@ def time_to_recovery(close, start, u, hold, traded=None, min_traded=30,
     3. that window holds at least ``min_traded`` traded candles (enough evidence);
     4. the data actually covers the whole window (``t + hold <= last candle open + step``).
 
+    Edge case: a close exactly at ``1 ± u`` is neither "off-peg" (``> u``) nor "in band" (``< u``),
+    so it can break a recovery window. This follows the definitions fixed before the analysis.
+
     ``traded`` is a boolean Series (True = candle with real trades, volume > 0). If None,
     every candle counts as traded (this is the "exchange-filled candles included" sensitivity).
     Returns ``(recovery_time, duration)`` or ``(NaT, NaT)`` if it never recovers in the data.
@@ -125,6 +128,9 @@ def classify_wick(df, ts, window=pd.Timedelta(minutes=15)):
 
     Using a median of the minutes before (not just the previous close) keeps a cluster of
     consecutive spikes from being mistaken for a new level (changed after inspecting the data).
+
+    Warning: the label looks ``window`` into the future, so it is a hindsight description only.
+    Using it as a real-time signal would be look-ahead bias.
     Returns a dict with the extreme, the body (|close - open|), the wick size, both levels and the label.
     """
     row = df.loc[ts]
@@ -147,6 +153,7 @@ def rolling_median_close(close, window=pd.Timedelta(minutes=15)):
 
     The value at time t uses only candles in (t - window, t]: never the future (no look-ahead).
     A median ignores spikes that last less than half the window but follows a move that stays.
+    Because it only looks back, it lags: turning points show up to ~half a window later.
     """
     return close.rolling(window).median()
 
