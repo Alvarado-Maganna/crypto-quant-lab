@@ -38,7 +38,8 @@ Instructions for Claude Code in this repository. Read this file at the start of 
 - One branch per feature or experiment: `feat/...`, `exp/...`, `fix/...`, `docs/...`, `setup/...`.
 - Small, focused commits with clear messages.
 - Open a pull request into `main`. The owner must understand and approve every PR before merging.
-- Before asking the owner to run anything, ask them to **predict the result** first.
+- No predictions (changed 2026-11-14). Instead, run the notebook section by section and give a **guided reading** (in the owner's language): after each table or plot, explain how to read it (axes, units, each line/column), why it comes out that way (the mechanism), and which concept of the current module it connects to. Ask if there are doubts before moving to the next section; at the end ask "What surprised you?".
+- Each notebook ends with a **"Key takeaways"** section: 3–5 conclusions backed by its results.
 
 ## Review
 
