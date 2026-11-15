@@ -1,4 +1,4 @@
-"""Download and clean daily OHLCV candles from a crypto exchange (via ccxt).
+"""Download and clean OHLCV candles from a crypto exchange (via ccxt); checks are for daily.
 
 OHLCV = Open, High, Low, Close, Volume. Each candle summarizes one period (here: one UTC day).
 
@@ -19,12 +19,16 @@ ONE_DAY = pd.Timedelta(days=1)
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 
-def fetch_raw_ohlcv(exchange, symbol, since, timeframe="1d", limit=1000, max_pages=1000):
+def fetch_raw_ohlcv(exchange, symbol, since, timeframe="1d", limit=1000, max_pages=1000,
+                    until=None):
     """Download all candles from ``since`` (Unix ms) up to now, page by page.
 
     Each call returns at most ``limit`` candles. The next page starts at the last timestamp
     we received + 1 ms, so the last candle is never requested twice. We stop when a page
     comes back empty or does not move forward in time.
+
+    ``until`` (Unix ms, optional): stop once we reach candles opening after it, and drop
+    those candles. Without it, the download runs up to the present.
 
     Returns a list of ``[timestamp_ms, open, high, low, close, volume]`` rows, as sent by
     the exchange (no cleaning yet).
@@ -34,6 +38,14 @@ def fetch_raw_ohlcv(exchange, symbol, since, timeframe="1d", limit=1000, max_pag
         page = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
         if not page:
             break
+        if until is not None:
+            reached_end = page[-1][0] >= until
+            page = [row for row in page if row[0] <= until]
+            rows.extend(page)
+            if reached_end or not page:
+                break
+            since = page[-1][0] + 1
+            continue
         rows.extend(page)
         next_since = page[-1][0] + 1
         if next_since <= since:  # defensive: never loop forever on a stuck API
