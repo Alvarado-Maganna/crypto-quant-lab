@@ -38,8 +38,19 @@ Instructions for Claude Code in this repository. Read this file at the start of 
 - One branch per feature or experiment: `feat/...`, `exp/...`, `fix/...`, `docs/...`, `setup/...`.
 - Small, focused commits with clear messages.
 - Open a pull request into `main`. The owner must understand and approve every PR before merging.
-- No predictions (changed 2026-11-14). Instead, run the notebook section by section and give a **guided reading** (in the owner's language): after each table or plot, explain how to read it (axes, units, each line/column), why it comes out that way (the mechanism), and which concept of the current module it connects to. Ask if there are doubts before moving to the next section; at the end ask "What surprised you?".
-- Each notebook ends with a **"Key takeaways"** section: 3–5 conclusions backed by its results.
+
+## Notebook cycle
+
+Every notebook follows these steps, in order:
+
+1. **Implement:** the code in `src/` with tests in `tests/`, and the notebook in `notebooks/`.
+2. **Run:** the notebook top to bottom on a clean kernel; sanity-check the outputs (orders of magnitude, dates, units).
+3. **Guided reading of outputs (in Spanish):** go section by section. After each table or plot, explain what it shows (how to read it: axes, units, each line or column), why it comes out that way (the mechanism), and which concept of the current module it connects to. At the end, ask the owner: "What surprised you?"
+4. **Reviewer subagent:** run it (see Review below), then fix what it finds.
+5. **PR:** clear commits in English, push the branch, open the PR with `gh`.
+6. **The owner approves the merge.** Never merge yourself.
+
+Each notebook ends with a **"Key takeaways"** section: 3–5 conclusions, each backed by a number in the notebook.
 
 ## Review
 
