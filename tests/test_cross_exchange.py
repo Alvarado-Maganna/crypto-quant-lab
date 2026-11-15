@@ -75,3 +75,8 @@ def test_runs_above_lists_each_run():
     assert runs.loc[0, "max_abs_bps"] == 30 and runs.loc[0, "signed_at_max_bps"] == -30
     assert runs.loc[0, "first_utc"] == minutes(6)[1]
     assert runs_above(diff * 0, 20).empty
+
+
+def test_summarize_diff_rejects_empty_series():
+    with pytest.raises(ValueError, match="No common minutes"):
+        summarize_diff(pd.Series([], dtype=float), 20)

@@ -58,6 +58,8 @@ def longest_run(above, step="1min"):
 def summarize_diff(diff, threshold_bps=20.0):
     """Summary of one difference series (bps): the numbers in the notebook's per-pair table."""
     diff = diff.dropna()
+    if diff.empty:
+        raise ValueError("No common minutes to summarize")
     absolute = diff.abs()
     above = absolute > threshold_bps
     return {

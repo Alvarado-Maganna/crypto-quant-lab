@@ -154,3 +154,10 @@ def test_first_available_candle_direct_and_by_bisection():
     ex = HistoryLimitedExchange(candles, served_from=T0_MS + 137 * MIN_MS)
     assert first_available_candle(ex, "BTC/USDT", T0_MS, T0_MS + 500 * MIN_MS) == \
         T0_MS + 137 * MIN_MS
+
+
+def test_timestamp_containing_451_is_not_a_region_block():
+    pauses = []
+    ex = Flaky([ccxt.RequestTimeout("timeout GET ...?startTime=1760119200451")])
+    assert fetch_page_with_retry(ex, "BTC/USDT", "1m", T0_MS, 10, sleep=pauses.append)
+    assert pauses == [1.0]

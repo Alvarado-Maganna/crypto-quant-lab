@@ -23,6 +23,7 @@ Measured on 2026-11-15 with ccxt 4.5.92 (BTC/USDT spot, 1m), see notebook 03, st
 
 from __future__ import annotations
 
+import re
 import time
 
 import pandas as pd
@@ -62,6 +63,8 @@ def fetch_raw_ohlcv(exchange, symbol, since, timeframe="1d", limit=1000, max_pag
             page = [row for row in page if row[0] <= until]
             rows.extend(page)
             if reached_end or not page:
+                break
+            if page[-1][0] + 1 <= since:  # defensive: never loop forever on a stuck API
                 break
             since = page[-1][0] + 1
             continue
@@ -203,7 +206,8 @@ def fetch_page_with_retry(exchange, symbol, timeframe, since, limit, max_retries
             return exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
         except NetworkError as error:
             message = str(error)
-            if any(code in message for code in ACCESS_DENIED_CODES):
+            # Whole-word match, so a timestamp like 1760119200451 in the message does not count.
+            if any(re.search(rf"\b{code}\b", message) for code in ACCESS_DENIED_CODES):
                 raise PermissionError(f"Access denied (region block?) for {symbol}: {message}") \
                     from error
             if attempt == max_retries:
