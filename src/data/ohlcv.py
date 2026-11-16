@@ -19,6 +19,13 @@ Measured on 2026-11-15 with ccxt 4.5.92 (BTC/USDT spot, 1m), see notebook 03, st
   re-sorts them). ``since`` is **inclusive**.
 - ccxt does not paginate by itself; with ``params={"paginate": True}`` it ignored ``since``
   on Binance, so we paginate by hand.
+
+Measured on 2026-11-16 with ccxt 4.5.92 (Binance USD-M perpetual BTC/USDT:USDT, 1m), see
+notebook 04, step 0:
+- The API (``/fapi/v1/klines`` and ``/fapi/v1/markPriceKlines``) accepts up to 1500 per request
+  (2000 is rejected with error -1130); **ccxt caps the request at 1000**, so we use 1000.
+- Mark-price candles come through the same ``fetch_ohlcv`` with ``params={"price": "mark"}``.
+  Their volume is always 0: the mark price is a computed index, not a traded price.
 """
 
 from __future__ import annotations
@@ -33,14 +40,17 @@ ONE_MINUTE = pd.Timedelta(minutes=1)
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 # Largest page each exchange really returns for 1m candles (measured, not from the docs).
-EXCHANGE_MAX_LIMIT = {"binance": 1000, "bybit": 1000, "okx": 300}
+EXCHANGE_MAX_LIMIT = {"binance": 1000, "bybit": 1000, "okx": 300, "binanceusdm": 1000}
+
+# Price series a perpetual exposes besides normal trade candles ("last"). None = last.
+PRICE_TYPES = (None, "mark")
 
 # HTTP codes that mean "you are not allowed here" (e.g. region block): retrying will not help.
 ACCESS_DENIED_CODES = ("451", "403")
 
 
 def fetch_raw_ohlcv(exchange, symbol, since, timeframe="1d", limit=1000, max_pages=1000,
-                    until=None):
+                    until=None, price=None):
     """Download all candles from ``since`` (Unix ms) up to now, page by page.
 
     Each call returns at most ``limit`` candles. The next page starts at the last timestamp
@@ -50,12 +60,14 @@ def fetch_raw_ohlcv(exchange, symbol, since, timeframe="1d", limit=1000, max_pag
     ``until`` (Unix ms, optional): stop once we reach candles opening after it, and drop
     those candles. Without it, the download runs up to the present.
 
+    ``price``: ``None`` for normal trade candles ("last"), ``"mark"`` for mark-price candles.
+
     Returns a list of ``[timestamp_ms, open, high, low, close, volume]`` rows, as sent by
     the exchange (no cleaning yet).
     """
     rows = []
     for _ in range(max_pages):
-        page = fetch_page_with_retry(exchange, symbol, timeframe, since, limit)
+        page = fetch_page_with_retry(exchange, symbol, timeframe, since, limit, price=price)
         if not page:
             break
         if until is not None:
@@ -189,21 +201,27 @@ def make_exchange(exchange_id):
 
 
 def fetch_page_with_retry(exchange, symbol, timeframe, since, limit, max_retries=5,
-                          base_pause_s=1.0, sleep=time.sleep):
+                          base_pause_s=1.0, sleep=time.sleep, price=None):
     """Call ``exchange.fetch_ohlcv`` once, retrying temporary failures with exponential backoff.
 
     Temporary failures are ccxt ``NetworkError`` subclasses: HTTP 429 (rate limit), 418, time-outs,
     5xx. We wait 1 s, 2 s, 4 s, ... between tries. HTTP 451/403 (blocked for your region / not
     allowed) is **not** retried, because waiting does not fix it: we raise ``PermissionError``.
     Errors that are not network errors (e.g. a bad symbol) are raised immediately.
+
+    ``price=None`` asks for normal trade candles exactly as before. ``price="mark"`` asks a
+    perpetual for its mark-price candles (ccxt ``params={"price": "mark"}``).
     """
+    if price not in PRICE_TYPES:
+        raise ValueError(f"price must be one of {PRICE_TYPES}, got {price!r}")
+    extra = {} if price is None else {"params": {"price": price}}
     try:
         from ccxt import NetworkError
     except ImportError:  # pragma: no cover - ccxt is a declared dependency
         NetworkError = OSError
     for attempt in range(max_retries + 1):
         try:
-            return exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
+            return exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit, **extra)
         except NetworkError as error:
             message = str(error)
             # Whole-word match, so a timestamp like 1760119200451 in the message does not count.
@@ -217,7 +235,7 @@ def fetch_page_with_retry(exchange, symbol, timeframe, since, limit, max_retries
 
 
 def fetch_ohlcv_window(exchange_id, symbol, start_utc, end_utc, timeframe="1m", now_utc=None,
-                       exchange=None, limit=None):
+                       exchange=None, limit=None, price=None):
     """Download candles whose open time is in ``[start_utc, end_utc)`` (end excluded).
 
     Steps: paginate (``fetch_raw_ohlcv``), parse ms -> UTC, keep only the window, drop exact
@@ -228,6 +246,9 @@ def fetch_ohlcv_window(exchange_id, symbol, start_utc, end_utc, timeframe="1m", 
     ``limit`` defaults to the measured maximum page size for that exchange.
     Returns ``(df, info)``: df has columns open/high/low/close/volume (volume in the **base**
     currency, i.e. BTC for BTC/USDT); info counts what each cleaning step removed.
+
+    ``price="mark"`` downloads mark-price candles instead (their volume column is always 0);
+    ``info`` then also records ``"price": "mark"``.
     """
     from src.data.candles import drop_exact_duplicates, to_utc
 
@@ -242,7 +263,7 @@ def fetch_ohlcv_window(exchange_id, symbol, start_utc, end_utc, timeframe="1m", 
     since_ms = int(start.timestamp() * 1000)
     until_ms = int((end - step).timestamp() * 1000)  # open time of the last candle we want
     rows = fetch_raw_ohlcv(exchange, symbol, since_ms, timeframe=timeframe, limit=limit,
-                           until=until_ms)
+                           until=until_ms, price=price)
     df = raw_to_frame(rows)[OHLCV_COLUMNS].astype(float)
     received = len(df)
     df = df[(df.index >= start) & (df.index < end)]
@@ -258,7 +279,23 @@ def fetch_ohlcv_window(exchange_id, symbol, start_utc, end_utc, timeframe="1m", 
         "incomplete_dropped": before - len(df),
         "candles": len(df),
     }
+    if price is not None:
+        info["price"] = price
     return df, info
+
+
+def cache_path(cache_dir, exchange_id, symbol, timeframe, label, price=None):
+    """File name for a cached window, with the price type in it so series never collide.
+
+    Example: ``binanceusdm_BTCUSDT-USDT_1m_oct9-10_mark.parquet``. ``price=None`` is written
+    as ``last``. ``/`` and ``:`` in the ccxt symbol are not valid in Windows file names.
+    """
+    from pathlib import Path
+
+    if price not in PRICE_TYPES:
+        raise ValueError(f"price must be one of {PRICE_TYPES}, got {price!r}")
+    clean_symbol = symbol.replace("/", "").replace(":", "-")
+    return Path(cache_dir) / f"{exchange_id}_{clean_symbol}_{timeframe}_{label}_{price or 'last'}.parquet"
 
 
 def load_or_fetch_window(path, fetch):
