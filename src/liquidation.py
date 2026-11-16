@@ -135,13 +135,18 @@ def first_touch_at_or_below(low, entry_times, levels):
                      name="touched_at")
 
 
-def simulate_isolated_longs(entry_close, lows, leverages, margin, mmr, cum=0.0):
+def simulate_isolated_longs(entry_close, lows, leverages, margin, mmr, cum=0.0,
+                            opening_fee_rate=0.0):
     """One hypothetical isolated long per entry candle and leverage; when is each liquidated?
 
     ``entry_close``: Series of entry prices (close of each entry candle), indexed by open time.
     ``lows``: dict ``{name: Series of lows}``, e.g. ``{"mark": ..., "last": ...}``; each series
     must contain the entry candles and the candles after them.
     Each position has ``margin`` USDT and size ``qty = margin * leverage / entry``.
+
+    ``opening_fee_rate`` (default 0): a fee of ``notional * rate`` (Binance charges fees on the
+    notional, not on the margin) is taken **out of the isolated margin**, while ``qty`` stays
+    the same. This is a pessimistic sensitivity: a smaller margin moves LP closer to the entry.
 
     Returns one row per (leverage, entry time) with entry, qty, notional, the exact liquidation
     price ``lp``, the drop from entry to ``lp`` in %, and ``liquidated_<name>`` (open time of
@@ -153,10 +158,11 @@ def simulate_isolated_longs(entry_close, lows, leverages, margin, mmr, cum=0.0):
     for leverage in leverages:
         entry = entry_close.astype(float)
         qty = margin * leverage / entry
-        lp = pd.Series([liquidation_price_isolated("long", e, q, margin, mmr, cum)
-                        for e, q in zip(entry, qty)], index=entry.index)
+        fee = qty * entry * opening_fee_rate
+        lp = pd.Series([liquidation_price_isolated("long", e, q, margin - f, mmr, cum)
+                        for e, q, f in zip(entry, qty, fee)], index=entry.index)
         out = pd.DataFrame({"leverage": leverage, "entry": entry, "qty": qty,
-                            "notional": qty * entry, "lp": lp,
+                            "notional": qty * entry, "opening_fee": fee, "lp": lp,
                             "drop_to_lp_pct": 100 * (1 - lp / entry)})
         for name, low in lows.items():
             # set_axis keeps the tz-aware datetime dtype (to_numpy would turn it into objects)

@@ -117,3 +117,16 @@ def test_simulate_uses_exact_lp_and_each_low_series():
     assert row["liquidated_mark"] == T[4]                         # mark only at 90,000
     dtype = sim["liquidated_mark"].dtype   # tz-aware datetimes, not plain objects
     assert isinstance(dtype, pd.DatetimeTZDtype) and str(dtype.tz) == "UTC"
+
+
+def test_opening_fee_is_on_notional_and_comes_out_of_margin_not_size():
+    close = pd.Series(100_000.0, index=T[:1])
+    low = pd.Series(100_000.0, index=T)
+    base = simulate_isolated_longs(close, {"mark": low}, [20], 1_000, 0.004).iloc[0]
+    fee = simulate_isolated_longs(close, {"mark": low}, [20], 1_000, 0.004,
+                                  opening_fee_rate=0.0005).iloc[0]
+    assert fee["opening_fee"] == pytest.approx(10.0)       # 20,000 notional x 0.05%
+    assert fee["qty"] == pytest.approx(base["qty"])          # same position size
+    # LP = (990 - 20000) / (0.2*0.004 - 0.2) = -19010 / -0.1992 = 95,431.73
+    assert fee["lp"] == pytest.approx(95_431.73, abs=TOL)
+    assert fee["lp"] > base["lp"]                            # closer to the entry
