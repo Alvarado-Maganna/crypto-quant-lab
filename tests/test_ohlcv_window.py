@@ -161,3 +161,68 @@ def test_timestamp_containing_451_is_not_a_region_block():
     ex = Flaky([ccxt.RequestTimeout("timeout GET ...?startTime=1760119200451")])
     assert fetch_page_with_retry(ex, "BTC/USDT", "1m", T0_MS, 10, sleep=pauses.append)
     assert pauses == [1.0]
+
+
+# --- price="mark" (notebook 04) -------------------------------------------------------
+
+
+class PriceAwareExchange(FakeMinuteExchange):
+    """Serves different candles for last and mark, and records the params it received."""
+
+    def __init__(self, last, mark):
+        super().__init__(last, max_page=1000)
+        self.mark, self.params_seen = mark, []
+
+    def fetch_ohlcv(self, symbol, timeframe, since=None, limit=None, params=None):
+        self.params_seen.append(params)
+        source = self.mark if (params or {}).get("price") == "mark" else self.candles
+        return [c for c in source if c[0] >= since][:limit]
+
+
+def test_price_none_calls_fetch_ohlcv_exactly_as_before():
+    ex = PriceAwareExchange([minute(i) for i in range(3)], [minute(i, price=50.0) for i in range(3)])
+    df, info = fetch_ohlcv_window("binanceusdm", "BTC/USDT:USDT", T0, T0 + pd.Timedelta(minutes=3),
+                                  now_utc="2026-01-01", exchange=ex)
+    assert ex.params_seen == [None]          # no params keyword was sent at all
+    assert (df["close"] == 100.0).all() and "price" not in info
+
+
+def test_price_mark_is_passed_to_ccxt_and_returns_mark_candles():
+    ex = PriceAwareExchange([minute(i) for i in range(3)],
+                            [minute(i, price=50.0, volume=0.0) for i in range(3)])
+    df, info = fetch_ohlcv_window("binanceusdm", "BTC/USDT:USDT", T0, T0 + pd.Timedelta(minutes=3),
+                                  now_utc="2026-01-01", exchange=ex, price="mark")
+    assert ex.params_seen == [{"price": "mark"}]
+    assert (df["close"] == 50.0).all() and info["price"] == "mark"
+
+
+def test_unknown_price_type_is_rejected():
+    with pytest.raises(ValueError, match="price"):
+        fetch_page_with_retry(FakeMinuteExchange([]), "BTC/USDT:USDT", "1m", T0_MS, 10,
+                              price="index")
+
+
+def test_mark_cache_neither_reads_nor_overwrites_last_cache(tmp_path):
+    from src.data.ohlcv import cache_path, load_or_fetch_window
+
+    ex = PriceAwareExchange([minute(i) for i in range(3)], [minute(i, price=50.0) for i in range(3)])
+    end = T0 + pd.Timedelta(minutes=3)
+
+    def fetcher(price):
+        return lambda: fetch_ohlcv_window("binanceusdm", "BTC/USDT:USDT", T0, end,
+                                          now_utc="2026-01-01", exchange=ex, price=price)
+
+    last_path = cache_path(tmp_path, "binanceusdm", "BTC/USDT:USDT", "1m", "w")
+    mark_path = cache_path(tmp_path, "binanceusdm", "BTC/USDT:USDT", "1m", "w", price="mark")
+    assert last_path != mark_path
+    assert last_path.name == "binanceusdm_BTCUSDT-USDT_1m_w_last.parquet"
+    assert mark_path.name == "binanceusdm_BTCUSDT-USDT_1m_w_mark.parquet"
+
+    last_df, _ = load_or_fetch_window(last_path, fetcher(None))
+    last_bytes = last_path.read_bytes()
+    mark_df, mark_info = load_or_fetch_window(mark_path, fetcher("mark"))
+
+    assert len(ex.params_seen) == 2              # mark was downloaded, not read from last's file
+    assert (mark_df["close"] == 50.0).all() and (last_df["close"] == 100.0).all()
+    assert mark_info["price"] == "mark"
+    assert last_path.read_bytes() == last_bytes  # last's cache is untouched
