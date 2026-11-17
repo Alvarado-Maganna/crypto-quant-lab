@@ -61,6 +61,14 @@ def test_bad_inputs_raise(kwargs):
         liquidation_price_isolated(**args)
 
 
+@pytest.mark.parametrize("kwargs", [dict(qty=0), dict(margin=-1)])
+def test_equity_and_maintenance_rejects_bad_size_or_margin(kwargs):
+    args = dict(side="long", price=95_000, entry_price=100_000, qty=0.1, margin=1_000,
+                mmr=0.004) | kwargs
+    with pytest.raises(ValueError):
+        equity_and_maintenance(**args)
+
+
 # --- simulation on candles ------------------------------------------------------------
 
 import pandas as pd  # noqa: E402

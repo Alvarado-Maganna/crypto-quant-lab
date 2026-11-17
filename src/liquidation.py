@@ -21,8 +21,11 @@ Sources (Binance support FAQ):
 - Liquidation price formula: https://www.binance.com/en/support/faq/b3c689c1f50a44cabb3a84e663b81d93
 - Maintenance margin = notional * MMR - cum: https://www.binance.com/en/support/faq/360033162192
 
-This is an approximation: it ignores trading fees, funding payments and the liquidation
-clearance fee, all of which move the real liquidation price closer to the entry.
+This is an approximation. It ignores:
+- the opening fee: if it is taken from the isolated margin, it moves LP closer to the entry;
+- funding payments: a long can pay or receive funding, so they can move LP either way;
+- the liquidation clearance fee: it changes what is left after a liquidation, not the price
+  that triggers it.
 """
 
 from __future__ import annotations
@@ -91,6 +94,10 @@ def equity_and_maintenance(side, price, entry_price, qty, margin, mmr, cum=0.0):
     At the liquidation price the two are equal (used to check the formula).
     """
     _check_inputs(side, entry_price, mmr)
+    if qty <= 0:
+        raise ValueError("qty must be > 0 (use side to say long or short)")
+    if margin <= 0:
+        raise ValueError("margin must be > 0")
     pnl = qty * (price - entry_price) if side == "long" else qty * (entry_price - price)
     return margin + pnl, qty * price * mmr - cum
 
