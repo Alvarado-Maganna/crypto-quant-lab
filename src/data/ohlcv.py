@@ -43,7 +43,9 @@ OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 EXCHANGE_MAX_LIMIT = {"binance": 1000, "bybit": 1000, "okx": 300, "binanceusdm": 1000}
 
 # Price series a perpetual exposes besides normal trade candles ("last"). None = last.
-PRICE_TYPES = (None, "mark")
+# "premiumIndex" (notebook 05): candles of the premium (perp vs index) as a **fraction**, not a
+# price; values can be negative and volume is always 0 (GET /fapi/v1/premiumIndexKlines).
+PRICE_TYPES = (None, "mark", "premiumIndex")
 
 # HTTP codes that mean "you are not allowed here" (e.g. region block): retrying will not help.
 ACCESS_DENIED_CODES = ("451", "403")
