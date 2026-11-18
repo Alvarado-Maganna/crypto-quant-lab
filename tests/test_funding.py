@@ -90,6 +90,12 @@ def test_frame_parses_ms_utc_and_empty_mark():
     assert df["funding_rate_str"].iloc[0] == "0.00010000"
 
 
+def test_missing_rate_type_raises_instead_of_guessing():
+    rows = [{k: v for k, v in row(i).items() if k != "rateType"} for i in range(2)]
+    with pytest.raises(ValueError, match="rateType"):
+        funding_to_frame(rows)
+
+
 def test_window_end_excluded_special_dropped_duplicates_dropped():
     rows = [row(0), row(1), row(1), row(2, rate_type="Special"), row(3), row(4)]
     df, info = fetch_funding_window(FakeFundingAPI(rows), "BTCUSDT", T0,

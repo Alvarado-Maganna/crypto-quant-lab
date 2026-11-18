@@ -88,6 +88,9 @@ def fetch_raw_funding(fetch_page, symbol, start_ms, end_ms, limit=FUNDING_MAX_LI
             break
         rows.extend(page)
         last = int(page[-1]["fundingTime"])
+        # A short page means "nothing more": this relies on the API never returning fewer than
+        # ``limit`` rows while more exist. Measured in notebook 05 (step 0): it returns the full
+        # 1000 when asked for 1000. If that ever changes, the row-count checks downstream catch it.
         if len(page) < limit or last + 1 >= end_ms:
             break
         if last + 1 <= since:  # defensive: never loop forever on a stuck API
@@ -115,12 +118,14 @@ def funding_to_frame(rows):
         empty.index = pd.DatetimeIndex([], tz="UTC", name="funding_time_utc")
         return empty
     df = pd.DataFrame(rows)
+    if "rateType" not in df:   # do not guess "Regular": a missing field must be looked at
+        raise ValueError("Rows have no 'rateType' field; cannot tell Regular from Special")
     out = pd.DataFrame({
         "funding_time_ms": df["fundingTime"].astype("int64"),
         "funding_rate": df["fundingRate"].astype(float),
         "funding_rate_str": df["fundingRate"].astype(str),
         "mark_price": pd.to_numeric(df["markPrice"].replace("", None), errors="coerce"),
-        "rate_type": df["rateType"].astype(str) if "rateType" in df else "Regular",
+        "rate_type": df["rateType"].astype(str),
         "symbol": df["symbol"].astype(str),
     })
     out.index = pd.to_datetime(out["funding_time_ms"], unit="ms", utc=True)
