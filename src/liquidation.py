@@ -143,7 +143,7 @@ def first_touch_at_or_below(low, entry_times, levels):
 
 
 def simulate_isolated_longs(entry_close, lows, leverages, margin, mmr, cum=0.0,
-                            opening_fee_rate=0.0):
+                            opening_fee_rate=0.0, funding_per_qty=0.0):
     """One hypothetical isolated long per entry candle and leverage; when is each liquidated?
 
     ``entry_close``: Series of entry prices (close of each entry candle), indexed by open time.
@@ -154,6 +154,13 @@ def simulate_isolated_longs(entry_close, lows, leverages, margin, mmr, cum=0.0,
     ``opening_fee_rate`` (default 0): a fee of ``notional * rate`` (Binance charges fees on the
     notional, not on the margin) is taken **out of the isolated margin**, while ``qty`` stays
     the same. This is a pessimistic sensitivity: a smaller margin moves LP closer to the entry.
+
+    ``funding_per_qty`` (default 0, USDT per unit of base currency): funding paid per 1 BTC of
+    position, e.g. ``sum(mark_k * rate_k)`` over the funding times of a window (notebook 05).
+    ``qty * funding_per_qty`` is taken **out of the isolated margin from the entry on**, which
+    is pessimistic in time (in reality each payment happens at its own funding time) and is not
+    verified to be how Binance treats isolated margin. A negative value (funding received)
+    adds margin.
 
     Returns one row per (leverage, entry time) with entry, qty, notional, the exact liquidation
     price ``lp``, the drop from entry to ``lp`` in %, and ``liquidated_<name>`` (open time of
@@ -166,10 +173,12 @@ def simulate_isolated_longs(entry_close, lows, leverages, margin, mmr, cum=0.0,
         entry = entry_close.astype(float)
         qty = margin * leverage / entry
         fee = qty * entry * opening_fee_rate
-        lp = pd.Series([liquidation_price_isolated("long", e, q, margin - f, mmr, cum)
-                        for e, q, f in zip(entry, qty, fee)], index=entry.index)
+        funding = qty * funding_per_qty
+        lp = pd.Series([liquidation_price_isolated("long", e, q, margin - f - fu, mmr, cum)
+                        for e, q, f, fu in zip(entry, qty, fee, funding)], index=entry.index)
         out = pd.DataFrame({"leverage": leverage, "entry": entry, "qty": qty,
-                            "notional": qty * entry, "opening_fee": fee, "lp": lp,
+                            "notional": qty * entry, "opening_fee": fee,
+                            "funding_paid": funding, "lp": lp,
                             "drop_to_lp_pct": 100 * (1 - lp / entry)})
         for name, low in lows.items():
             # set_axis keeps the tz-aware datetime dtype (to_numpy would turn it into objects)
