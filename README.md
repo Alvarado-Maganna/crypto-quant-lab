@@ -60,5 +60,6 @@ python scripts/collect_order_book.py --help                           # all opti
   round in progress; restarting in the same folder is safe.
 - Network errors and rate limits are retried with growing waits; a market that keeps failing is
   skipped for that round and logged (never filled in).
-- Keep the computer awake while it runs. Expect roughly 46 million rows per day.
+- Keep the computer awake while it runs. Expect roughly 40 million rows per day; load one
+  market at a time with `load_snapshots(folder, markets=[...])`.
 - Load the data with `from src.data.order_book import load_snapshots`.

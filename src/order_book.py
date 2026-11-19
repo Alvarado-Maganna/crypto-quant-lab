@@ -88,13 +88,20 @@ def pick_altcoin(ranking, start_rank=75, stable_tol=0.02):
 def snapshot_metrics(levels, bands=BANDS, target_notional=TARGET_NOTIONAL):
     """One row per snapshot (market, local_request_utc) with the metrics of the module docstring.
 
-    Raises if a snapshot is crossed (best bid >= best ask): that would be a data error.
+    Raises if a snapshot is crossed (best bid >= best ask) or has an empty side (no bids or no
+    asks at all): both would be data errors, and silent NaNs would hide them.
     """
     df = levels[SNAPSHOT_KEY + ["side", "level", "price", "amount"]].copy()
+    for col in ("market", "side"):  # plain strings: categoricals add empty groups in groupby
+        df[col] = df[col].astype(str)
     df["quote"] = df["price"] * df["amount"]
     best = (df[df["level"] == 0].pivot_table(index=SNAPSHOT_KEY, columns="side",
                                               values="price", aggfunc="first"))
-    out = pd.DataFrame({"best_bid": best["bid"], "best_ask": best["ask"]})
+    out = pd.DataFrame({"best_bid": best.get("bid"), "best_ask": best.get("ask")},
+                       index=best.index)
+    empty = out[["best_bid", "best_ask"]].isna().any(axis=1)
+    if empty.any():
+        raise ValueError(f"{int(empty.sum())} snapshot(s) with an empty side: no best bid or ask")
     crossed = out["best_bid"] >= out["best_ask"]
     if crossed.any():
         raise ValueError(f"{int(crossed.sum())} crossed snapshot(s): best bid >= best ask")

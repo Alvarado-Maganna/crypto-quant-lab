@@ -32,6 +32,7 @@ and any leftover parts. Schema: see ``SNAPSHOT_COLUMNS``.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 import uuid
@@ -57,12 +58,16 @@ SNAPSHOT_COLUMNS = {
     "amount": "amount resting at that price, in the base currency (BTC, ETH, ...)",
     "local_request_utc": "our clock just before the first attempt of the request (UTC); if the "
                          "request was retried, the latency includes the waits",
-    "local_receive_utc": "our clock just after receiving the answer (UTC)",
+    "local_receive_utc": "our clock just after receiving the answer (UTC): the first moment the "
+                         "snapshot is known, so use it (or 'E' on USD-M) to line snapshots up "
+                         "with other data without look-ahead",
     "exchange_event_utc": "exchange message time 'E' (USD-M only; NaT on spot)",
     "exchange_transaction_utc": "exchange transaction time 'T' (USD-M only; NaT on spot)",
     "last_update_id": "exchange book version; equal ids = identical books",
     "requested_limit": "levels per side we asked for",
-    "round_id": "round number within one collection run (0, 1, 2, ...)",
+    "round_id": "slot number within one collection run (0, 1, 2, ...; jumps where slots were "
+                "skipped). It restarts at 0 in every run, so identify a snapshot by (market, "
+                "local_request_utc), never by round_id alone",
 }
 DEDUP_KEY = ["market", "local_request_utc", "side", "level"]
 
@@ -118,8 +123,10 @@ def fetch_with_retry(fn, params, max_retries=6, base_pause_s=2.0, max_pause_s=12
                      sleep=time.sleep, log=print):
     """Call ``fn(params)``; on ccxt network / rate-limit errors wait and retry (2, 4, 8 ... s).
 
-    Rate-limit answers (HTTP 429 "too many requests", 418 "IP banned for a while") wait at least
-    60 s. Other errors (e.g. invalid parameters) are raised at once: retrying will not fix them.
+    Rate-limit answers (HTTP 429 "too many requests") wait at least 60 s. HTTP 418 means the IP
+    is **banned** for a while (minutes to days, longer for repeat offenders): retrying would make
+    it worse, so we raise ``IPBanned`` and ``collect`` stops. Other errors (e.g. invalid
+    parameters) are raised at once: retrying will not fix them.
     """
     import ccxt
 
@@ -128,12 +135,13 @@ def fetch_with_retry(fn, params, max_retries=6, base_pause_s=2.0, max_pause_s=12
             return fn(params)
         except ccxt.NetworkError as error:  # includes RateLimitExceeded, DDoSProtection, timeouts
             message = str(error)[:200]
+            if " 418 " in f" {message} ":
+                raise IPBanned(f"HTTP 418, IP banned by Binance: {message}") from error
             if attempt == max_retries:
                 raise RuntimeError(f"Still failing after {max_retries} retries: {message}") \
                     from error
             pause = min(base_pause_s * 2**attempt, max_pause_s)
-            if isinstance(error, ccxt.DDoSProtection) or " 429 " in f" {message} " \
-                    or " 418 " in f" {message} ":
+            if isinstance(error, ccxt.DDoSProtection) or " 429 " in f" {message} ":
                 pause = max(pause, 60.0)
             log(f"{type(error).__name__} on {params} (attempt {attempt + 1}): {message}; "
                 f"retrying in {pause:.0f} s")
@@ -149,14 +157,20 @@ def used_weight(exchange):
     return None
 
 
-def weight_pause_s(used, limit, now_ms_value, max_fraction=0.8):
+def weight_pause_s(used, limit, now_ms_value, max_fraction=0.8, margin_s=3.0):
     """Seconds to wait so the weight counter resets, if ``used`` exceeds ``max_fraction`` of
-    ``limit``; else 0. Binance resets the counter at each UTC minute boundary; we add 1 s margin.
+    ``limit``; else 0. Binance resets the counter at each minute boundary of *its* clock; we
+    wait for the next boundary of ours plus ``margin_s`` (our PC was measured ~0.85 s ahead of
+    Binance in notebook 06, so a 1 s margin would leave almost none).
     """
     if used is None or used <= max_fraction * limit:
         return 0.0
     ms_into_minute = now_ms_value % 60_000
-    return (60_000 - ms_into_minute) / 1000 + 1.0
+    return (60_000 - ms_into_minute) / 1000 + margin_s
+
+
+class IPBanned(RuntimeError):
+    """Binance answered HTTP 418: the IP is banned for a while. Collection must stop."""
 
 
 def fetch_snapshot(exchange, market, clock=now_ms, **retry_kwargs):
@@ -271,13 +285,24 @@ def _dedup(df):
         .reset_index(drop=True)
 
 
-def load_snapshots(out_dir):
-    """Read every stored level (hour files + leftover parts) as one DataFrame."""
+CATEGORICAL_COLUMNS = ["market", "exchange", "symbol", "side"]
+
+
+def load_snapshots(out_dir, markets=None):
+    """Read every stored level (hour files + leftover parts) as one DataFrame.
+
+    ``markets``: optional list of ``market`` labels to keep (read with a Parquet filter, so the
+    other markets never enter memory: 45 minutes of 4 markets is ~7.4M rows, ~1 GB in pandas;
+    a 24 h run is ~40M rows). Text columns are returned as categoricals to save memory.
+    """
     out_dir = Path(out_dir)
     files = sorted(out_dir.glob("*.parquet")) + sorted(out_dir.glob("parts/*/*.parquet"))
     if not files:
         raise FileNotFoundError(f"No snapshot files in {out_dir}")
-    return _dedup(pd.concat([pd.read_parquet(f) for f in files], ignore_index=True))
+    filters = [("market", "in", list(markets))] if markets is not None else None
+    frames = [pd.read_parquet(f, filters=filters) for f in files]
+    df = _dedup(pd.concat(frames, ignore_index=True))
+    return df.astype({c: "category" for c in CATEGORICAL_COLUMNS})
 
 
 def collect(exchanges, markets, store, interval_s=10.0, n_rounds=None, duration_s=None,
@@ -286,18 +311,23 @@ def collect(exchanges, markets, store, interval_s=10.0, n_rounds=None, duration_
 
     ``exchanges``: dict exchange id -> ccxt client. Stops after ``n_rounds`` rounds or once
     ``duration_s`` has passed (one of them is required). Round ``k`` is scheduled at
-    ``start + k * interval_s``; if a round runs late, the next one starts at once (never two
-    rounds at the same time). A market that keeps failing after the retries is logged and
-    skipped for that round (its snapshot is missing, not filled). Rounds are flushed to
-    ``store`` every ``flush_every`` rounds and at the end (also on Ctrl+C or an error).
+    ``start + k * interval_s``. If a round ends after the next slot has passed (a retry, a
+    weight pause, the computer sleeping), the missed slots are **skipped**, not caught up: the
+    next round is the first slot still in the future, so ``round_id`` jumps and the gap stays
+    visible (catching up would fire rounds back to back and over-weight that moment). A market
+    that keeps failing after the retries is logged and skipped for that round (its snapshot is
+    missing, not filled); an HTTP 418 ban stops the collection. Rounds are flushed to ``store``
+    every ``flush_every`` rounds and at the end (also on Ctrl+C or an error). A failed merge of
+    an hour file is logged and retried later; it never stops the collection.
 
-    Returns a summary dict: rounds, snapshots, failures, max weight seen per exchange.
+    Returns a summary dict: rounds, skipped slots, snapshots, failures, max weight seen per
+    exchange. It is also logged at the end, even after Ctrl+C or an error.
     """
     if n_rounds is None and duration_s is None:
         raise ValueError("give n_rounds or duration_s")
     start_ms = clock()
-    buffer, summary = [], {"rounds": 0, "snapshots": 0, "failures": 0, "max_used_weight": {},
-                           "start_ms": start_ms}
+    buffer, summary = [], {"rounds": 0, "skipped_slots": 0, "snapshots": 0, "failures": 0,
+                           "max_used_weight": {}, "start_ms": start_ms}
 
     def flush():
         if buffer:
@@ -319,6 +349,8 @@ def collect(exchanges, markets, store, interval_s=10.0, n_rounds=None, duration_
                 exchange = exchanges[market.exchange_id]
                 try:
                     snap = fetch_snapshot(exchange, market, clock=clock, sleep=sleep, log=log)
+                except IPBanned:
+                    raise
                 except Exception as error:  # log, skip this market this round, keep going
                     summary["failures"] += 1
                     log(f"round {k}: {market.label} failed: {type(error).__name__}: "
@@ -336,13 +368,22 @@ def collect(exchanges, markets, store, interval_s=10.0, n_rounds=None, duration_
                         log(f"weight {used} on {market.exchange_id}: pausing {pause:.0f} s")
                         sleep(pause)
             summary["rounds"] += 1
-            k += 1
-            if k % flush_every == 0:
+            if summary["rounds"] % flush_every == 0:
                 flush()
-                store.compact_finished_hours(pd.to_datetime(clock(), unit="ms", utc=True))
+                try:
+                    store.compact_finished_hours(pd.to_datetime(clock(), unit="ms", utc=True))
+                except Exception as error:  # e.g. Windows: file open in another program
+                    log(f"merging finished hours failed ({type(error).__name__}: "
+                        f"{str(error)[:200]}); will retry later")
+            next_slot = math.ceil((clock() - start_ms) / (interval_s * 1000))
+            if next_slot > k + 1:
+                summary["skipped_slots"] += next_slot - (k + 1)
+                log(f"round {k} ended late: skipping {next_slot - (k + 1)} missed slot(s)")
+            k = max(k + 1, next_slot)
     finally:
         flush()
-    summary["end_ms"] = clock()
+        summary["end_ms"] = clock()
+        log(f"collection summary: {summary}")
     return summary
 
 
@@ -355,7 +396,8 @@ def make_exchanges(exchange_ids=("binance", "binanceusdm")):
     2026-11-19, first attempt of notebook 06's session). The budget is kept by ``collect``
     instead: a round costs 750 of the 6000 spot weight per minute (4500 per minute at one round
     every 10 s), the ``x-mbx-used-weight-1m`` header is read after every call with a pause at
-    80% of the budget, and HTTP 429/418 answers wait at least 60 s (``fetch_with_retry``).
+    80% of the budget, HTTP 429 answers wait at least 60 s and HTTP 418 (ban) stops the
+    collection (``fetch_with_retry``).
     """
     import ccxt
 

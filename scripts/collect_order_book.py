@@ -15,7 +15,9 @@ Output (see ``src/data/order_book.py`` for the schema):
 
 Errors: network errors and rate limits are retried with growing waits (2, 4, 8 ... s, at
 least 60 s after an HTTP 429/418). A market that still fails is skipped for that round and
-logged; its snapshot is missing, never filled in. Weight per round: 750 (spot) + 20 (USD-M) of
+logged; its snapshot is missing, never filled in. An HTTP 418 (IP ban) stops the run. If a
+round ends late (e.g. after a retry or the computer sleeping), the missed slots are skipped, not
+caught up, so there are never bursts of rounds. Weight per round: 750 (spot) + 20 (USD-M) of
 the 6000 / 2400 allowed per minute; if a response header shows more than 80% used, it pauses
 until the next minute.
 
@@ -26,8 +28,9 @@ Usage (from the repo root, with the .venv active):
     python scripts/collect_order_book.py --alt SOL/USDT        # a different altcoin
 
 Keep the computer awake (no sleep mode) while it runs. Stop it any time with Ctrl+C.
-Size: about 32,000 rows per round, i.e. roughly 46 million rows per day at one round per minute
-(a few hundred MB of Parquet). ``data/`` is gitignored.
+Size: about 27,000 rows per round (thin books return fewer than 5000 levels), i.e. roughly
+40 million rows per day at one round per minute (a few hundred MB of Parquet). Loading a whole
+day needs several GB of memory: use ``load_snapshots(folder, markets=[...])`` to read one market. ``data/`` is gitignored.
 
 Load the result in Python with::
 
@@ -99,6 +102,9 @@ def main(argv=None):
         log(f"end: {json.dumps(summary)}")
     except KeyboardInterrupt:
         log("stopped by the user (Ctrl+C); everything flushed so far is saved")
+    except Exception as error:  # e.g. IPBanned: log it, merge what we have, then re-raise
+        log(f"stopped by an error: {type(error).__name__}: {error}")
+        raise
     finally:
         store.compact_finished_hours(datetime(2100, 1, 1, tzinfo=timezone.utc))  # merge all
         log_file.close()

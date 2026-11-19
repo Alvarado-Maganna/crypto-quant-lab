@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data.order_book import (HourlyParquetStore, Market, collect, default_markets,
+from src.data.order_book import (HourlyParquetStore, IPBanned, Market, collect, default_markets,
                                  depth_weight, fetch_with_retry, load_snapshots, round_weight,
                                  snapshot_to_frame, weight_pause_s)
 from src.order_book import (consecutive_changes, pick_altcoin, quantile_summary,
@@ -59,8 +59,8 @@ def test_round_weight_of_default_markets():
 def test_weight_pause():
     assert weight_pause_s(4800, 6000, 15_000) == 0.0          # exactly 80%: no pause
     assert weight_pause_s(None, 6000, 15_000) == 0.0
-    # 4801 > 80%; 15 s into the minute -> wait 45 s to the boundary + 1 s margin
-    assert weight_pause_s(4801, 6000, 60_000 * 7 + 15_000) == pytest.approx(46.0)
+    # 4801 > 80%; 15 s into the minute -> wait 45 s to the boundary + 3 s margin
+    assert weight_pause_s(4801, 6000, 60_000 * 7 + 15_000) == pytest.approx(48.0)
 
 
 # --- raw snapshot -> rows --------------------------------------------------------------------
@@ -255,3 +255,79 @@ def test_pick_altcoin_skips_stablecoins_and_non_crypto():
     symbol, classified = pick_altcoin(ranking, start_rank=2)
     assert symbol == "ALT1/USDT"   # rank 2 is a stablecoin, rank 3 a tokenized stock
     assert list(classified["excluded_as"])[:3] == ["", "stablecoin", "tokenized equity / ETF"]
+
+
+# --- review fixes: skipped slots, merge failures, bans, empty sides, filtered loading --------
+
+class SlowExchange(FakeExchange):
+    """Like FakeExchange, but call number ``slow_call`` takes ``delay_s`` seconds."""
+
+    def __init__(self, clock, slow_call, delay_s):
+        super().__init__()
+        self.clock, self.slow_call, self.delay_s = clock, slow_call, delay_s
+
+    def _answer(self, params):
+        if self.calls + 1 == self.slow_call:
+            self.clock.sleep(self.delay_s)
+        return super()._answer(params)
+
+    publicGetDepth = fapiPublicGetDepth = _answer
+
+
+def test_collect_skips_missed_slots_instead_of_catching_up(tmp_path):
+    clock, logs = FakeClock(T0_MS), []
+    # round 1 takes 35 s: slots 2 and 3 (at +20 s and +30 s) are already gone when it ends
+    exchanges = {"binance": SlowExchange(clock, slow_call=2, delay_s=35)}
+    summary = collect(exchanges, [SPOT], HourlyParquetStore(tmp_path), interval_s=10,
+                      duration_s=60, clock=clock, sleep=clock.sleep, log=logs.append)
+    rounds = sorted(load_snapshots(tmp_path)["round_id"].unique())
+    assert rounds == [0, 1, 5]  # slot 4 (+40 s) is also passed: round 1 ends at ~+45 s
+    assert summary["skipped_slots"] == 3 and summary["rounds"] == 3
+    assert any("skipping 3 missed slot(s)" in m for m in logs)
+    starts = load_snapshots(tmp_path).groupby("round_id")["local_request_utc"].min()
+    assert (starts.diff().dropna() > pd.Timedelta(seconds=9.9)).all()  # never back to back
+
+
+def test_collect_survives_a_failed_merge(tmp_path):
+    class BrokenStore(HourlyParquetStore):
+        def compact_finished_hours(self, now_utc):
+            raise PermissionError("file is open in another program")
+
+    clock, logs = FakeClock(T0_MS), []
+    summary = collect({"binance": FakeExchange()}, [SPOT], BrokenStore(tmp_path), interval_s=10,
+                      n_rounds=3, clock=clock, sleep=clock.sleep, log=logs.append)
+    assert summary["rounds"] == 3 and summary["snapshots"] == 3
+    assert sum("merging finished hours failed" in m for m in logs) == 3
+
+
+def test_ip_ban_stops_the_collection(tmp_path):
+    class BannedExchange(FakeExchange):
+        def _answer(self, params):
+            raise ccxt.DDoSProtection("binance 418 I'm a teapot")
+
+        publicGetDepth = fapiPublicGetDepth = _answer
+
+    pauses = []
+    with pytest.raises(IPBanned):
+        fetch_with_retry(BannedExchange()._answer, {}, sleep=pauses.append, log=lambda m: None)
+    assert pauses == []  # no retry at all
+    clock, logs = FakeClock(T0_MS), []
+    with pytest.raises(IPBanned):
+        collect({"binance": BannedExchange()}, [SPOT], HourlyParquetStore(tmp_path),
+                interval_s=10, n_rounds=3, clock=clock, sleep=clock.sleep, log=logs.append)
+    assert any("collection summary" in m for m in logs)  # summary logged even on error
+
+
+def test_empty_side_raises():
+    with pytest.raises(ValueError, match="empty side"):
+        snapshot_metrics(frame(bids=[]))
+
+
+def test_load_snapshots_filters_markets_and_uses_categoricals(tmp_path):
+    store = HourlyParquetStore(tmp_path)
+    store.append(pd.concat([frame(market=SPOT), frame(market=PERP, event_ms=T0_MS)]))
+    only_perp = load_snapshots(tmp_path, markets=[PERP.label])
+    assert set(only_perp["market"]) == {PERP.label} and len(only_perp) == 6
+    assert str(only_perp["side"].dtype) == "category"
+    m = snapshot_metrics(load_snapshots(tmp_path))  # categoricals do not break the metrics
+    assert len(m) == 2
