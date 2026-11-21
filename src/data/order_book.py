@@ -221,12 +221,35 @@ def hour_key(ts):
     return pd.Timestamp(ts).tz_convert("UTC").strftime("%Y%m%d_%H")
 
 
-def _atomic_write_parquet(df, path):
+LOCKED_FILE_PAUSES_S = (0.5, 1.0, 2.0, 4.0, 8.0)   # waits between attempts on a locked file
+
+
+def _retry_if_locked(action, pauses_s=LOCKED_FILE_PAUSES_S, sleep=time.sleep):
+    """Run ``action()``; on ``PermissionError`` wait and try again (``pauses_s``), then raise.
+
+    On Windows, renaming over or deleting a file fails with ``PermissionError`` while another
+    program has it open (an antivirus scan, the search indexer, a notebook or
+    ``collector_status.py`` reading it). Such locks usually last well under a second.
+    """
+    for pause in (*pauses_s, None):
+        try:
+            return action()
+        except PermissionError:
+            if pause is None:
+                raise
+            sleep(pause)
+
+
+def _atomic_write_parquet(df, path, sleep=time.sleep):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
-    df.to_parquet(tmp, index=False)
-    os.replace(tmp, path)  # atomic on the same disk: readers see the old file or the new one
+    _retry_if_locked(lambda: df.to_parquet(tmp, index=False), sleep=sleep)
+    try:  # atomic on the same disk: readers see the old file or the new one
+        _retry_if_locked(lambda: os.replace(tmp, path), sleep=sleep)
+    except BaseException:
+        tmp.unlink(missing_ok=True)   # do not leave a stray .tmp behind
+        raise
 
 
 class HourlyParquetStore:
@@ -263,7 +286,10 @@ class HourlyParquetStore:
         merged = _dedup(pd.concat(frames, ignore_index=True))
         _atomic_write_parquet(merged, self.hour_path(key))
         for p in parts:  # only after the hour file is safely written
-            p.unlink()
+            try:
+                _retry_if_locked(p.unlink)
+            except PermissionError:
+                pass  # still locked: harmless, the next merge drops its duplicate rows
         try:
             part_dir.rmdir()
         except OSError:
@@ -317,8 +343,10 @@ def collect(exchanges, markets, store, interval_s=10.0, n_rounds=None, duration_
     visible (catching up would fire rounds back to back and over-weight that moment). A market
     that keeps failing after the retries is logged and skipped for that round (its snapshot is
     missing, not filled); an HTTP 418 ban stops the collection. Rounds are flushed to ``store``
-    every ``flush_every`` rounds and at the end (also on Ctrl+C or an error). A failed merge of
-    an hour file is logged and retried later; it never stops the collection.
+    every ``flush_every`` rounds and at the end (also on Ctrl+C or an error). Locked files
+    (Windows) are retried for ~15 s (``_retry_if_locked``); a write that still fails keeps the
+    snapshots in memory for the next round, and a failed merge of an hour file is retried later:
+    neither stops the collection.
 
     Returns a summary dict: rounds, skipped slots, snapshots, failures, max weight seen per
     exchange. It is also logged at the end, even after Ctrl+C or an error.
@@ -369,7 +397,12 @@ def collect(exchanges, markets, store, interval_s=10.0, n_rounds=None, duration_
                         sleep(pause)
             summary["rounds"] += 1
             if summary["rounds"] % flush_every == 0:
-                flush()
+                try:
+                    flush()
+                except Exception as error:  # e.g. a file still locked after the retries
+                    summary["failed_flushes"] = summary.get("failed_flushes", 0) + 1
+                    log(f"writing to disk failed ({type(error).__name__}: {str(error)[:200]}); "
+                        f"{len(buffer)} snapshot(s) kept in memory, will retry next round")
                 try:
                     store.compact_finished_hours(pd.to_datetime(clock(), unit="ms", utc=True))
                 except Exception as error:  # e.g. Windows: file open in another program
@@ -381,7 +414,11 @@ def collect(exchanges, markets, store, interval_s=10.0, n_rounds=None, duration_
                 log(f"round {k} ended late: skipping {next_slot - (k + 1)} missed slot(s)")
             k = max(k + 1, next_slot)
     finally:
-        flush()
+        try:
+            flush()
+        except Exception as error:
+            log(f"final write to disk failed ({type(error).__name__}: {str(error)[:200]}); "
+                f"{len(buffer)} snapshot(s) lost")
         summary["end_ms"] = clock()
         log(f"collection summary: {summary}")
     return summary
