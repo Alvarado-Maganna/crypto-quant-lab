@@ -157,3 +157,32 @@ def test_log_events_and_state(tmp_path):
     with log.open("a", encoding="utf-8") as f:
         f.write("2026-11-22 00:10:00 UTC  stopped by the user (Ctrl+C)\n")
     assert run_state(log)[0] == "stopped"
+
+
+# --- second review: odd answers, data-loss log line, a market that never succeeds --------------
+
+def test_odd_answer_skips_the_market_instead_of_stopping(tmp_path):
+    class OddExchange(FakeExchange):
+        def _answer(self, params):
+            raw = FakeExchange._answer(self, params)   # counts the call
+            if self.calls == 2:
+                return {"code": -1, "msg": "maintenance"}      # no 'bids' / 'asks'
+            return raw
+
+        publicGetDepth = fapiPublicGetDepth = _answer
+
+    clock, logs = FakeClock(T_MS), []
+    summary = collect({"binance": OddExchange()}, [SPOT], HourlyParquetStore(tmp_path),
+                      interval_s=60, n_rounds=3, clock=clock, sleep=clock.sleep, log=logs.append)
+    assert summary["rounds"] == 3 and summary["failures"] == 1
+    assert any("round 1: spot X/USDT failed: KeyError" in m for m in logs)
+
+
+def test_status_flags_final_write_loss_and_missing_market(tmp_path):
+    log = tmp_path / "collector.log"
+    log.write_text("2026-11-23 00:10:00 UTC  final write to disk failed (OSError: x); "
+                   "4 snapshot(s) lost\n", encoding="utf-8")
+    assert list(log_events(log)["kind"]) == ["write/merge failed"]
+    snaps = read_snapshots(_run_folder(tmp_path))
+    table = snapshots_per_hour(snaps, 60, markets=["spot X/USDT", "perp X/USDT:USDT", "alt"])
+    assert (table["alt"] == 0).all() and (table["complete rounds"] == 0).all()

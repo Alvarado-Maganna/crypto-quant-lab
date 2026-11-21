@@ -26,6 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.data.order_book import default_markets  # noqa: E402
 from src.data.run_status import (disk_report, log_events, missing_minutes,  # noqa: E402
                                  read_snapshots, run_state, snapshots_per_hour)
 
@@ -41,6 +42,8 @@ def main(argv=None):
     parser.add_argument("run_dir", help="folder of the run, e.g. data/collector/2026-11-21")
     parser.add_argument("--interval-s", type=float, default=60.0,
                         help="interval of the run, in seconds (default 60)")
+    parser.add_argument("--alt", default="PENGU/USDT",
+                        help="altcoin of the run (default PENGU/USDT), to list every market")
     parser.add_argument("--last-errors", type=int, default=10,
                         help="how many of the latest log warnings to print (default 10)")
     parser.add_argument("--planned-min", type=float, default=48 * 60 + 20,
@@ -68,7 +71,8 @@ def main(argv=None):
               f"({(now - last).total_seconds() / 60:.1f} min ago)")
         print(f"\n== snapshots per UTC hour (expected = rounds that fit in the covered part "
               f"of the hour at one every {args.interval_s:g} s)")
-        print(snapshots_per_hour(snaps, args.interval_s).to_string())
+        markets = [m.label for m in default_markets(args.alt)]
+        print(snapshots_per_hour(snaps, args.interval_s, markets).to_string())
         gaps = missing_minutes(snaps)
         print(f"\n== minutes without any snapshot: {int(gaps['minutes'].sum()) if len(gaps) else 0}"
               f" in {len(gaps)} gap(s)")

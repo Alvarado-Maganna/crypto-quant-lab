@@ -377,6 +377,9 @@ def collect(exchanges, markets, store, interval_s=10.0, n_rounds=None, duration_
                 exchange = exchanges[market.exchange_id]
                 try:
                     snap = fetch_snapshot(exchange, market, clock=clock, sleep=sleep, log=log)
+                    # inside the try: an odd answer (no 'bids', a maintenance page) is a
+                    # failed market for this round, not the end of the run
+                    snap_frame = snapshot_to_frame(snap, market, k)
                 except IPBanned:
                     raise
                 except Exception as error:  # log, skip this market this round, keep going
@@ -384,9 +387,14 @@ def collect(exchanges, markets, store, interval_s=10.0, n_rounds=None, duration_
                     log(f"round {k}: {market.label} failed: {type(error).__name__}: "
                         f"{str(error)[:200]}")
                     continue
-                buffer.append(snapshot_to_frame(snap, market, k))
+                buffer.append(snap_frame)
                 summary["snapshots"] += 1
-                used = used_weight(exchange)
+                try:
+                    used = used_weight(exchange)
+                except Exception as error:  # an odd header must not stop the run
+                    log(f"round {k}: unreadable weight header ({type(error).__name__}: "
+                        f"{str(error)[:200]})")
+                    used = None
                 if used is not None:
                     prev = summary["max_used_weight"].get(market.exchange_id, 0)
                     summary["max_used_weight"][market.exchange_id] = max(prev, used)

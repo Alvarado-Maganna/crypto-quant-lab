@@ -21,7 +21,7 @@ SNAPSHOT_KEY = ["market", "local_request_utc"]
 LOG_PATTERNS = {
     "IP ban (HTTP 418)": r"HTTP 418|IPBanned",
     "stopped": r"stopped by",
-    "write/merge failed": r"(writing to disk|final write|merging .*|final merge) failed",
+    "write/merge failed": r"(writing to disk|final write to disk|merging .*|final merge) failed",
     "request failed (snapshot missing)": r"round \d+: .* failed",
     "retry": r"retrying in",
     "weight pause": r"pausing",
@@ -55,13 +55,19 @@ def read_snapshots(run_dir, attempts=3):
         .reset_index(drop=True)
 
 
-def snapshots_per_hour(snaps, interval_s=60.0):
+def snapshots_per_hour(snaps, interval_s=60.0, markets=None):
     """Snapshots per market and UTC hour, plus ``complete rounds`` (the minimum across markets)
-    and ``expected`` (rounds that fit in the part of the hour the run covered)."""
+    and ``expected`` (rounds that fit in the part of the hour the run covered).
+
+    ``markets``: the labels the run should have; a market that never succeeded still gets a
+    column of zeros, so it pulls ``complete rounds`` down instead of vanishing."""
     if snaps.empty:
         return pd.DataFrame()
     hour = snaps["local_request_utc"].dt.floor("h")
     table = snaps.groupby([hour, "market"]).size().unstack("market", fill_value=0)
+    if markets is not None:
+        extra = [c for c in table.columns if c not in markets]
+        table = table.reindex(columns=list(markets) + extra, fill_value=0)
     table.index.name = "hour (UTC)"
     table["complete rounds"] = table.min(axis=1)
     first, last = snaps["local_request_utc"].min(), snaps["local_request_utc"].max()
