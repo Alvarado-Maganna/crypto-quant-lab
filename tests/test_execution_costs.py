@@ -150,3 +150,40 @@ def test_summary_counts_and_shares():
     r = shares.loc[("spot X/USDT", "taker -> taker", "long", 50.0)]
     assert r[["spread (%)", "impact (%)", "fee (%)"]].sum() == pytest.approx(100)
     assert r["impact (%)"] == pytest.approx(0)
+
+
+# --- fees by market and order type -------------------------------------------------------------
+
+PERP = Market("perp X/USDT:USDT", "binanceusdm", "X/USDT:USDT", "XUSDT", 3)
+FEES_TWO = {**FEES, "perp X/USDT:USDT": {"maker": 0.0002, "taker": 0.0005}}
+
+
+def test_maker_and_taker_fees_are_not_swapped_and_follow_the_market():
+    # Same book on both markets; size 50 fits the best level (no impact).
+    # Perp: maker -> maker = 2 + 2 = 4 bps; taker -> taker = half spreads + 5 + 5;
+    # maker -> taker = exit half spread + 2 + 5. Spot keeps 10 bps per leg.
+    levels = pd.concat([book(), book(market=PERP)])
+    rt = round_trips(market_order_legs(levels, sizes=(50.0,)), FEES_TWO) \
+        .set_index(["market", "combo", "direction"])["total_bps"]
+    hs_buy, hs_sell = 1 / 101 * 1e4, 1 / 99 * 1e4
+    perp = "perp X/USDT:USDT"
+    assert rt[(perp, "maker -> maker", "long")] == pytest.approx(4)
+    assert rt[(perp, "taker -> taker", "long")] == pytest.approx(hs_buy + hs_sell + 10)
+    assert rt[(perp, "taker -> taker", "short")] == pytest.approx(hs_buy + hs_sell + 10)
+    assert rt[(perp, "maker -> taker", "long")] == pytest.approx(hs_sell + 7)
+    assert rt[(perp, "maker -> taker", "short")] == pytest.approx(hs_buy + 7)
+    assert rt[("spot X/USDT", "maker -> maker", "long")] == pytest.approx(20)
+
+
+def test_empty_side_raises():
+    with pytest.raises(ValueError):
+        market_order_legs(book(bids=[]), sizes=(10.0,))
+
+
+def test_truncated_when_request_exceeds_endpoint_maximum():
+    # Asked for 2000 levels on USD-M, whose endpoint returns at most 1000: a side of 1000 levels
+    # is all the API could give, so a size it cannot fill is "truncated", not "exhausted".
+    big = Market("perp Y/USDT:USDT", "binanceusdm", "Y/USDT:USDT", "YUSDT", 2000)
+    asks = [(101.0 + i * 0.01, 0.001) for i in range(1000)]      # ~101 USDT in total
+    legs = market_order_legs(book(asks=asks, market=big), sizes=(500.0,))
+    assert leg(legs, "buy", 500.0)["status"] == STATUS_TRUNCATED

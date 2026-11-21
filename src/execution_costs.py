@@ -19,9 +19,13 @@ bids. So entry and exit trade the same notional (the price does not move between
   spread, impact and fee (``fee_rate * 10,000``) add up exactly.
 - If the levels received add up to less than N, the order is **not fillable** with what we
   saw, and no cost is reported (no extrapolation). Two cases (notebook 06, section 6):
-  ``STATUS_TRUNCATED``: the side came back with the endpoint's maximum number of levels, so the
-  book goes on beyond what the API returned; ``STATUS_EXHAUSTED``: the side came back with fewer
-  levels than asked for, so we saw the whole book and it does not hold N.
+  ``STATUS_TRUNCATED``: the side came back with as many levels as the API could return
+  (``min(requested_limit, endpoint maximum)``), so the book may go on beyond what we saw;
+  ``STATUS_EXHAUSTED``: the side came back with fewer levels than that, so we saw the whole
+  book and it does not hold N.
+- The half spread in bps falls slightly for very large orders: it is divided by the notional
+  N, not by ``base_filled * mid``, and a large order buys fewer coins per USDT. Impact takes
+  the difference, so the total is unchanged.
 
 **Limit (maker) order at the best bid / ask**: cost = maker fee only, spread and impact 0
 (conservative: we price it at the mid, though a fill at the best bid/ask would be half a spread
@@ -34,12 +38,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.data.order_book import SPOT_DEPTH_MAX_LIMIT, USDM_DEPTH_VALID_LIMITS
+
 SIZES_USDT = (1_000.0, 10_000.0, 100_000.0, 1_000_000.0)
 SNAPSHOT_KEY = ["market", "local_request_utc"]
 STATUS_FILLED = "filled"
 STATUS_TRUNCATED = "book truncated by the API"
 STATUS_EXHAUSTED = "book exhausted"
 SIDE_OF_ACTION = {"buy": "ask", "sell": "bid"}     # a buy walks the asks, a sell the bids
+# Most levels per side each depth endpoint returns (documented limits, see src/data/order_book.py)
+ENDPOINT_MAX_LEVELS = {"binance": SPOT_DEPTH_MAX_LIMIT, "binanceusdm": max(USDM_DEPTH_VALID_LIMITS)}
 
 
 def market_order_legs(levels, sizes=SIZES_USDT):
@@ -52,9 +60,9 @@ def market_order_legs(levels, sizes=SIZES_USDT):
     notional. Costs are NaN when ``status`` is not ``STATUS_FILLED``.
     Raises on a crossed book or an empty side (data errors).
     """
-    df = levels[SNAPSHOT_KEY + ["local_receive_utc", "side", "level", "price", "amount",
-                                "requested_limit"]].copy()
-    for col in ("market", "side"):  # plain strings: categoricals add empty groups in groupby
+    df = levels[SNAPSHOT_KEY + ["local_receive_utc", "exchange", "side", "level", "price",
+                                "amount", "requested_limit"]].copy()
+    for col in ("market", "exchange", "side"):  # plain strings: categoricals add empty groups in groupby
         df[col] = df[col].astype(str)
     df = df.sort_values(SNAPSHOT_KEY + ["side", "level"], kind="stable").reset_index(drop=True)
 
@@ -74,7 +82,8 @@ def market_order_legs(levels, sizes=SIZES_USDT):
     df["cum_before"] = df.groupby(group_key)["quote"].cumsum() - df["quote"]
     side_info = df.groupby(group_key).agg(n_levels=("level", "size"),
                                           total_quote=("quote", "sum"),
-                                          requested_limit=("requested_limit", "first"))
+                                          requested_limit=("requested_limit", "first"),
+                                          exchange=("exchange", "first"))
 
     out = []
     for size in sizes:
@@ -90,8 +99,12 @@ def market_order_legs(levels, sizes=SIZES_USDT):
     legs["action"] = legs["side"].map({v: k for k, v in SIDE_OF_ACTION.items()})
     legs = legs.join(snap, on=SNAPSHOT_KEY)
     legs["best"] = np.where(legs["side"] == "ask", legs["best_ask"], legs["best_bid"])
-    filled = legs["total_quote"] >= legs["size_usdt"] * (1 - 1e-12)  # tolerance for rounding
-    truncated = legs["n_levels"] >= legs["requested_limit"]
+    # Tolerance for float rounding: a side a hair short of N counts as filled, and its avg_price
+    # comes out a hair high (harmless at 1e-12).
+    filled = legs["total_quote"] >= legs["size_usdt"] * (1 - 1e-12)
+    max_returnable = np.minimum(legs["requested_limit"],
+                                legs["exchange"].map(ENDPOINT_MAX_LEVELS).fillna(np.inf))
+    truncated = legs["n_levels"] >= max_returnable
     legs["status"] = np.select([filled, truncated], [STATUS_FILLED, STATUS_TRUNCATED],
                                default=STATUS_EXHAUSTED)
     ok = legs["status"] == STATUS_FILLED
