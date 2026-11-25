@@ -160,7 +160,9 @@ def frozen_values(sides, min_count=20, columns=None):
     real book (0 repeats on the three days validated in notebook 08), so a value seen 20 times
     (~10 minutes of rows) in one day is the file repeating an old number. Counting per day, not
     per consecutive run, also catches a value that alternates with another one or comes back
-    between other rows. NaN never counts. ``columns``: default every ``*_bid`` / ``*_ask``.
+    between other rows. NaN never counts. Counting is per UTC day, so a frozen stretch that
+    crosses midnight with fewer than ``min_count`` rows on each side is not flagged.
+    ``columns``: default every ``*_bid`` / ``*_ask``.
     """
     columns = columns or [c for c in sides.columns if c.endswith(("_bid", "_ask"))]
     day = sides.index.floor("D")
@@ -210,7 +212,7 @@ def match_nearest(left, right, tolerance="30s", left_on="timestamp_utc",
     """
     l = left.sort_values(left_on).copy()
     r = right.sort_values(right_on).copy()
-    # same resolution on both keys (bookDepth parses to us, the collector stores ms)
+    # same resolution on both keys (callers may pass us or ms timestamps)
     l[left_on] = l[left_on].astype("datetime64[ms, UTC]")
     r[right_on] = r[right_on].astype("datetime64[ms, UTC]")
     r["_right_time"] = r[right_on]
@@ -224,7 +226,7 @@ def match_nearest(left, right, tolerance="30s", left_on="timestamp_utc",
 def lagged_correlation(x, y, lags_h=range(-8, 9)):
     """Pearson correlation of ``x`` shifted by ``lag`` hours against ``y`` (both hourly Series
     indexed by UTC hour). ``lag = +k`` compares x at t - k with y at t, i.e. x's clock would
-    be **k hours ahead** of y's if this lag fits best. Returns a DataFrame lag -> corr, n."""
+    be **k hours behind** y's if this lag fits best (a file in UTC+8 read as UTC peaks at -8). Returns a DataFrame lag -> corr, n."""
     rows = []
     for lag in lags_h:
         shifted = x.copy()
@@ -284,7 +286,9 @@ def ratio_by_month(hourly, column, num=BUSINESS, den=WEEKEND_NIGHT, month_col=No
 
 
 def cell_percentile(table, row, col):
-    """Percentile (0-100) of one cell among all the cells of ``table`` (share of cells <= it)."""
+    """Percentile (0-100) of one cell among all the cells of ``table``: share of cells <= it, so
+    the cell counts itself (the deepest cell is 100). ``stress_table`` uses a strict < against
+    *other* days instead, since the day itself is not in its reference window."""
     values = table.to_numpy().ravel()
     values = values[~np.isnan(values)]
     return 100 * (values <= table.loc[row, col]).mean()
