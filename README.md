@@ -67,8 +67,9 @@ python scripts/collect_order_book.py --help                           # all opti
 ### `scripts/download_binance_vision.py`: public data files for notebook 08
 
 Downloads from data.binance.vision (free, no API key) the USDⓈ-M BTCUSDT `bookDepth` daily files
-(12 months, the 10 Oct 2025 week and 2026-11-19) and 1-minute spot klines for BTCUSDT and ETHUSDT
-over the same 12 months, into `data/binance_vision/`. Every zip's SHA-256 checksum is verified;
+(12 months, 6-15 Oct 2025 and 2026-11-19), 1-minute spot klines for BTCUSDT and ETHUSDT over the
+same 12 months (PENGUUSDT for the collector's two days) and USDⓈ-M BTCUSDT 1-minute klines for
+Aug-Nov 2026, into `data/binance_vision/`. Every zip's SHA-256 checksum is verified;
 files already downloaded are skipped, so it can be re-run after an interruption.
 
 ```bash

@@ -50,6 +50,13 @@ def spot_klines_path(symbol, interval, period):
     return f"spot/{kind}/klines/{symbol}/{interval}/{symbol}-{interval}-{period}.zip"
 
 
+def futures_klines_path(symbol, interval, period):
+    """Path of a USD-M futures klines zip (trade prices, 'last'). These CSVs have a header and
+    millisecond timestamps (checked 2026-11-24); ``read_klines_zip`` handles both."""
+    kind = "monthly" if len(period) == 7 else "daily"
+    return f"futures/um/{kind}/klines/{symbol}/{interval}/{symbol}-{interval}-{period}.zip"
+
+
 def klines_periods(start, end):
     """Monthly files for every full month in [start, end], daily files for the rest.
 
