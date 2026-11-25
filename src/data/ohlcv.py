@@ -189,7 +189,8 @@ def align_closes(frames):
 # Intraday windows from any ccxt exchange (notebook 03)
 # --------------------------------------------------------------------------------------
 
-TIMEFRAME_STEP = {"1m": ONE_MINUTE, "1d": ONE_DAY}
+ONE_HOUR = pd.Timedelta(hours=1)
+TIMEFRAME_STEP = {"1m": ONE_MINUTE, "1h": ONE_HOUR, "1d": ONE_DAY}
 
 
 def make_exchange(exchange_id):
