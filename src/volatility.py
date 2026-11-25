@@ -76,6 +76,8 @@ def normal_two_sided_tail(k):
 def student_t_two_sided_tail(k, df, points=200_001):
     """P(|T| > k) for a Student-t variable with ``df`` degrees of freedom (no scipy needed).
 
+    Needs numpy >= 2.0 (``np.trapezoid``).
+
     Computed as 1 - 2 * integral of the t density from 0 to k (trapezoid rule on a fine grid; the
     density is smooth and bounded, so this is accurate for any ``df``).
 
@@ -125,6 +127,23 @@ def acf(x, max_lag=20):
     return pd.Series(values, name="acf").rename_axis("lag"), n
 
 
+def acf_robust_band(x, max_lag=20, z_crit=1.96):
+    """95% band for the autocorrelation at each lag that stays valid when volatility clusters.
+
+    ``+-1.96 / sqrt(n)`` assumes i.i.d. data. When big moves come in streaks, the sample
+    autocorrelation of the *returns* is noisier than that, so the i.i.d. band is too narrow and
+    flags too many lags. This band uses the heteroskedasticity-robust variance
+    ``sum(d_t^2 * d_{t-k}^2) / (sum(d_t^2))^2`` (d = x - mean), which equals 1/n for i.i.d. data
+    with constant variance. Returns a Series of half-widths by lag.
+    """
+    x = pd.Series(x).dropna().to_numpy(dtype=float)
+    d = x - x.mean()
+    denom = (d ** 2).sum()
+    values = {lag: z_crit * math.sqrt((d[lag:] ** 2 * d[:-lag] ** 2).sum()) / denom
+              for lag in range(1, max_lag + 1)}
+    return pd.Series(values, name="robust_band").rename_axis("lag")
+
+
 def conditional_big_day(z, k=2.0):
     """P(big today | big yesterday) vs P(big today | not big yesterday), with ``big = |z| > k``.
 
@@ -164,12 +183,43 @@ def sqrt_t_by_group(fine_returns, coarse_returns, fine_group, coarse_group, peri
     return out
 
 
+def sqrt_t_null_ratio(n):
+    """What ``sqrt_t_by_group``'s ratio looks like **if the sqrt-t rule holds exactly**.
+
+    Assumes normal returns and a precisely known scaled fine sigma; then the ratio is
+    ``s / sigma`` for a std ``s`` computed from ``n`` coarse returns, and
+    ``(n - 1) s^2 / sigma^2`` is chi-square with ``n - 1`` degrees of freedom. With few returns
+    per group, ``s`` tends to come out **below** sigma, so the median ratio is below 1 even when
+    the rule holds. Uses the Wilson-Hilferty approximation of the chi-square distribution.
+
+    Returns ``(median ratio, probability that the ratio is > 1)``.
+    """
+    k = n - 1
+    if k < 1:
+        raise ValueError("need at least 2 returns per group")
+    c = 2 / (9 * k)
+    median_ratio = math.sqrt((1 - c) ** 3)
+    p_above_one = 0.5 * math.erfc(math.sqrt(c) / math.sqrt(2))  # P(Z > sqrt(c))
+    return median_ratio, p_above_one
+
+
+def week_sunday(index):
+    """The Sunday (as a tz-naive date) that ends the Monday-Sunday **UTC** week of each timestamp.
+
+    Raises if the index is not in UTC: dropping another timezone would silently keep its local
+    wall-clock time and put some candles in the wrong week.
+    """
+    if index.tz is None or str(index.tz) != "UTC":
+        raise ValueError("index must be timezone-aware UTC")
+    return index.tz_localize(None).to_period("W-SUN").end_time.normalize()
+
+
 def weekly_returns_from_daily(daily_close):
     """Monday-to-Sunday (UTC) weekly returns from daily closes: Sunday close / previous Sunday
     close - 1. Only weeks with all 7 daily candles count; the week is labelled by its Sunday.
     """
     daily_close = daily_close.sort_index()
-    weeks = daily_close.index.tz_localize(None).to_period("W-SUN")
+    weeks = week_sunday(daily_close.index)
     full = daily_close.groupby(weeks).transform("size") == 7
     sundays = daily_close[(daily_close.index.day_of_week == 6) & full.to_numpy()]
     ret = sundays / sundays.shift(1) - 1

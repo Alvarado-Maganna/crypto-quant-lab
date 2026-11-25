@@ -6,9 +6,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.volatility import (acf, annualize, conditional_big_day, normal_two_sided_tail,
+from src.volatility import (acf, acf_robust_band, annualize, conditional_big_day, normal_two_sided_tail,
                             past_only_sigma, past_only_z, sqrt_t_by_group, step_returns,
-                            student_t_two_sided_tail, tail_table, weekly_returns_from_daily)
+                            sqrt_t_null_ratio, student_t_two_sided_tail, tail_table,
+                            week_sunday, weekly_returns_from_daily)
 
 DAY = pd.Timedelta(days=1)
 
@@ -116,3 +117,64 @@ def test_student_t_tail_known_values():
 def test_tail_table_adds_t_column():
     t = tail_table(pd.Series([0.0, 5.0]), thresholds=(2,), t_df=29)
     assert t.loc["|z| > 2", "expected_t29"] == pytest.approx(2 * student_t_two_sided_tail(2, 29))
+
+
+def test_robust_band_matches_iid_band_for_iid_data():
+    rng = np.random.default_rng(1)
+    band = acf_robust_band(rng.normal(size=20_000), max_lag=3)
+    assert band.to_numpy() == pytest.approx(1.96 / math.sqrt(20_000), rel=0.05)
+
+
+def test_robust_band_is_wider_when_volatility_clusters():
+    rng = np.random.default_rng(2)
+    sigma = np.repeat(rng.choice([0.5, 3.0], size=400), 25)  # calm and wild blocks of 25 days
+    x = rng.normal(size=sigma.size) * sigma
+    assert (acf_robust_band(x, max_lag=5) > 1.96 / math.sqrt(x.size)).all()
+
+
+def test_sqrt_t_null_ratio_values():
+    median, p_above = sqrt_t_null_ratio(13)
+    assert median == pytest.approx(0.972, abs=0.002) and p_above == pytest.approx(0.446, abs=0.005)
+    assert sqrt_t_null_ratio(4)[0] == pytest.approx(0.89, abs=0.01)
+    assert sqrt_t_null_ratio(100_000)[0] == pytest.approx(1.0, abs=1e-4)
+
+
+def test_sqrt_t_null_ratio_matches_simulation():
+    rng = np.random.default_rng(3)
+    s = rng.normal(size=(200_000, 13)).std(axis=1, ddof=1)
+    median, p_above = sqrt_t_null_ratio(13)
+    assert np.median(s) == pytest.approx(median, abs=0.003)
+    assert (s > 1).mean() == pytest.approx(p_above, abs=0.005)
+
+
+def test_week_sunday_is_monday_to_sunday_utc():
+    idx = pd.DatetimeIndex(["2024-01-01 00:00", "2024-01-07 23:00", "2024-01-08 00:00"], tz="UTC")
+    assert list(week_sunday(idx).strftime("%Y-%m-%d")) == ["2024-01-07", "2024-01-07", "2024-01-14"]
+
+
+def test_week_sunday_rejects_non_utc():
+    idx = pd.DatetimeIndex(["2024-01-01"], tz="America/Mexico_City")
+    with pytest.raises(ValueError, match="UTC"):
+        week_sunday(idx)
+
+
+def test_daily_returns_of_a_week_compound_to_its_weekly_return():
+    rng = np.random.default_rng(4)
+    idx = days(70, start="2024-01-01")  # Monday: 10 full weeks
+    close = pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.02, 70)), index=idx)
+    daily = step_returns(close, DAY)
+    weekly = weekly_returns_from_daily(close)
+    compounded = (1 + daily).groupby(week_sunday(daily.index)).prod() - 1
+    assert compounded.loc[weekly.index.tz_localize(None)].to_numpy() == pytest.approx(weekly.to_numpy())
+
+
+def test_hourly_returns_of_a_utc_day_compound_to_its_daily_return():
+    rng = np.random.default_rng(5)
+    hours = pd.date_range("2024-01-01", periods=24 * 5, freq="h", tz="UTC")
+    hourly_close = pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.005, hours.size)), index=hours)
+    daily_close = hourly_close[hourly_close.index.hour == 23]
+    daily_close.index = daily_close.index.floor("D")       # daily close = 23:00 candle's close
+    hourly = step_returns(hourly_close, pd.Timedelta(hours=1))
+    daily = step_returns(daily_close, DAY)
+    compounded = (1 + hourly).groupby(hourly.index.floor("D")).prod() - 1
+    assert compounded.loc[daily.index].to_numpy() == pytest.approx(daily.to_numpy())

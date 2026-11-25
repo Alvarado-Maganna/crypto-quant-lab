@@ -20,9 +20,17 @@ hour-of-week, and cost vs typical move.
 - Simple returns, std with ddof=1, annualized with √365 (daily) and √(365·24) (hourly).
 - Past-only σ: std of the 30 returns before day t; z_t = r_t / σ_{t-1}. A full-sample σ appears
   only in one reference table, labelled as look-ahead.
-- Post-inspection choices: (a) no return across a missing hourly candle (NaN instead); (b) weekly
-  √t check grouped by quarter (a month has only 4–5 weeks); (c) tail table adds the count expected
-  under Student-t(29), the distribution of z for normal returns when σ is estimated from 30 days.
+- Post-inspection choices (several of them after the reviewer's comments):
+  - (a) No return across a missing hourly candle (NaN instead).
+  - (b) The weekly √t check is grouped by quarter (a month has only 4–5 weeks), and the √t ratios
+    are compared with the value expected if the rule holds (normal returns, same group sizes), not
+    with 1.
+  - (c) The tail table adds the count expected under Student-t(29), the distribution of z for normal
+    returns when σ is estimated from 30 days.
+  - (d) The autocorrelation of r is judged against a band that stays valid when volatility
+    clusters, not only against ±1.96/√n.
+  - (e) The hour × weekday heatmap also shows the median |r|, because the BTC cell with the largest
+    std is driven by a single hour (2020-03-13 02:00 UTC).
 - Costs (Part 7) are carried over from notebook 07 (taker → taker, BTC, 1k–10k): spot 20.00 bps,
   perp 10.02 bps without funding.
 
@@ -42,6 +50,6 @@ See the Findings table and the key takeaways of `notebooks/09_volatility.ipynb`.
 
 ## 7. Conclusion
 Daily volatility clusters and has fat tails that a normal distribution, or a 30-day σ estimate,
-does not explain. The √t rule holds for hourly → daily in the median month, and holds a little
-less well for daily → weekly. Next: use past-only σ for position sizing in the risk module, and
+does not explain. The √t rule holds for hourly → daily in the median month. For daily → weekly it
+holds for ETH, while BTC's weekly σ is somewhat below the rule. Next: use past-only σ for position sizing in the risk module, and
 check whether the clustering survives transaction costs before using it as a signal.
