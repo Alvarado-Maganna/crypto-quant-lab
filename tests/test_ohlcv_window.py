@@ -226,3 +226,12 @@ def test_mark_cache_neither_reads_nor_overwrites_last_cache(tmp_path):
     assert (mark_df["close"] == 50.0).all() and (last_df["close"] == 100.0).all()
     assert mark_info["price"] == "mark"
     assert last_path.read_bytes() == last_bytes  # last's cache is untouched
+
+
+def test_hourly_window_uses_one_hour_step():
+    hour_ms = 3_600_000
+    candles = [[T0_MS + i * hour_ms, 100.0, 101.0, 99.0, 100.0, 1.0] for i in range(30)]
+    ex = FakeMinuteExchange(candles)
+    df, info = fetch_ohlcv_window("binance", "BTC/USDT", T0, T0 + pd.Timedelta(hours=24),
+                                  timeframe="1h", now_utc="2026-01-01", exchange=ex)
+    assert len(df) == 24 and df.index[-1] == T0 + pd.Timedelta(hours=23)
