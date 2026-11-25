@@ -63,3 +63,18 @@ python scripts/collect_order_book.py --help                           # all opti
 - Keep the computer awake while it runs. Expect roughly 40 million rows per day; load one
   market at a time with `load_snapshots(folder, markets=[...])`.
 - Load the data with `from src.data.order_book import load_snapshots`.
+
+### `scripts/download_binance_vision.py`: public data files for notebook 08
+
+Downloads from data.binance.vision (free, no API key) the USDⓈ-M BTCUSDT `bookDepth` daily files
+(12 months, the 10 Oct 2025 week and 2026-11-19) and 1-minute spot klines for BTCUSDT and ETHUSDT
+over the same 12 months, into `data/binance_vision/`. Every zip's SHA-256 checksum is verified;
+files already downloaded are skipped, so it can be re-run after an interruption.
+
+```bash
+python scripts/download_binance_vision.py
+```
+
+- `bookDepth` is undocumented: notebook 08 (Part 1) validates what its columns mean before using it.
+- Spot klines from 2025 on use Unix **microseconds**; `read_klines_zip` detects the unit from the
+  number of digits and refuses anything unexpected.
