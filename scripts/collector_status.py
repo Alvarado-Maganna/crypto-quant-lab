@@ -46,8 +46,9 @@ def main(argv=None):
                         help="altcoin of the run (default PENGU/USDT), to list every market")
     parser.add_argument("--last-errors", type=int, default=10,
                         help="how many of the latest log warnings to print (default 10)")
-    parser.add_argument("--planned-min", type=float, default=48 * 60 + 20,
-                        help="planned duration in minutes, for the disk estimate (default 2900)")
+    parser.add_argument("--planned-min", type=float, default=48 * 60 + 25,
+                        help="planned duration in minutes, for the disk estimate (default 2905, "
+                             "the length of the 2026-11-21 run: 48 h 25 min)")
     args = parser.parse_args(argv)
     run_dir = Path(args.run_dir)
     if not run_dir.is_absolute():
