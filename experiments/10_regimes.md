@@ -37,11 +37,21 @@ window step, and the current state.
     event marker (same as notebook 09), and only 2020-05-11 and 2024-04-20 are labelled as halvings.
 - Post-inspection (cosmetic only): lighter drawdown bands and the legend moved; 2017 (no labels)
   removed from the flips table.
+- Changes after the reviewer (none changes a conclusion):
+  - The same-day column is explained per rule. It is mechanical for trend and drawdown, which use
+    close t, but not for volatility, whose σ goes up to t−1.
+  - Per-rule baselines and a warning about comparing 13 label rows at once.
+  - A rough Poisson check for the window step.
+  - A limitation on threshold flicker (deep-bear median 1 day vs max 1,015 days).
+  - Denominators made explicit in the takeaways.
+  - The notebook 09 cache cross-check is skipped if that cache is missing.
+  - Edge-case guards in `episodes` and `next_day_stats`, plus 4 more tests.
 - Costs: the flip cost uses an ASSUMED 20 bps spot taker round trip from notebook 07.
 
 ## 4. Benchmarks
-Not applicable (no strategy). The "all labelled days" next-day mean (13.9 bps) is the reference
-for the per-regime means.
+Not applicable (no strategy). Each rule's per-label next-day means are compared with that rule's
+own baseline, the mean over all its labelled days. The baselines are 10.5 bps (trend), 12.7
+(expanding vol), 11.7 (rolling vol) and 13.9 (drawdown), because the rules start on different dates.
 
 ## 5. Results
 See the Findings table and the key takeaways of `notebooks/10_regimes.ipynb`.

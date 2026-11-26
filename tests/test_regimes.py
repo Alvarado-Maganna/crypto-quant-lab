@@ -72,6 +72,18 @@ def test_rolling_terciles_drop_old_values():
     assert th["q2"].iloc[3] == pytest.approx(np.quantile([1, 2, 3], 2 / 3))
 
 
+def test_rolling_terciles_warmup_is_nan():
+    th = rolling_tercile_thresholds(s([1, 2, 3, 4]), window=3)
+    assert th.iloc[:2].isna().all().all()
+    assert th.iloc[2:].notna().all().all()
+
+
+def test_tercile_ties_go_to_mid():
+    x = s([3, 6])
+    th = pd.DataFrame({"q1": [3.0, 3.0], "q2": [6.0, 6.0]}, index=x.index)
+    assert tercile_label(x, th).tolist() == [MID, MID]
+
+
 def test_tercile_label_and_nan():
     x = s([1, 5, 9, np.nan])
     th = pd.DataFrame({"q1": [3.0] * 4, "q2": [6.0] * 4}, index=x.index)
@@ -114,6 +126,17 @@ def test_episode_summary_uses_complete_episodes_only():
     assert summ.loc["a", "median days (complete)"] == 6
     assert summ.loc["b", "n censored (last)"] == 1
     assert summ.loc["b", "n short (< 5 d)"] == 1
+
+
+def test_trailing_nan_does_not_end_the_last_run():
+    lab = pd.Series(["a", "b", "b", None], index=days(4), dtype=object)
+    assert episodes(lab)["censored_last"].tolist() == [False, True]
+
+
+def test_next_day_stats_skips_label_without_next_return():
+    lab = pd.Series(["a", "a", "b"], index=days(3), dtype=object)
+    st = next_day_stats(lab, s([0.0, 0.01, 0.02]))
+    assert list(st.index) == ["a"]   # 'b' is only on the last day: no next-day return
 
 
 def test_flips_per_year():

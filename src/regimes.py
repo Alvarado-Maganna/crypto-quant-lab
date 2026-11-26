@@ -107,8 +107,9 @@ def episodes(labels):
     """Runs of consecutive days with the same (non-NaN) label.
 
     A NaN day ends a run. Each run gets ``censored_first`` = it starts on the first labelled day
-    (we do not see its real start) and ``censored_last`` = it ends on the last day of the data
-    (it may still be going on). Only uncensored runs have a known full duration.
+    (we do not see its real start) and ``censored_last`` = it ends on the last labelled day (it
+    may still be going on; trailing NaN days do not end it, since we do not know its label there).
+    Only uncensored runs have a known full duration.
     """
     s = labels.dropna()
     cols = ["label", "start", "end", "n_days", "censored_first", "censored_last"]
@@ -121,7 +122,7 @@ def episodes(labels):
     out = g.agg(label=("label", "first"), start=("date", "first"), end=("date", "last"),
                 n_days=("label", "size")).reset_index(drop=True)
     out["censored_first"] = out["start"] == s.index[0]
-    out["censored_last"] = out["end"] == labels.index[-1]
+    out["censored_last"] = out["end"] == s.index[-1]
     return out[cols]
 
 
@@ -161,8 +162,10 @@ def next_day_stats(labels, returns):
     """Per label, stats of the **next-day** return (close t -> close t+1) after a day with that label.
 
     Also: the same stats without the label's single worst episode (lowest compounded next-day
-    return over the episode), and the mechanical same-day mean (return of day t itself, which
-    the label already "saw"). Returns are in basis points (1 bp = 0.01%).
+    return over the episode), and the same-day mean (return of day t itself). The same-day mean
+    is **mechanical** only for labels built from close t (trend, drawdown): those labels already
+    "saw" that return. A label built from data up to t-1 (e.g. the past-only sigma) did not see it.
+    Returns are in basis points (1 bp = 0.01%). Labels with no valid next-day return are skipped.
     """
     nxt = returns.shift(-1)
     eps = episodes(labels)
@@ -174,6 +177,8 @@ def next_day_stats(labels, returns):
     rows = []
     for label, g in df.groupby("label"):
         valid = g.dropna(subset=["next"])
+        if valid.empty:
+            continue
         compounded = valid.groupby("ep")["next"].apply(lambda r: (1 + r).prod() - 1)
         worst = compounded.idxmin()
         ex = valid[valid["ep"] != worst]
