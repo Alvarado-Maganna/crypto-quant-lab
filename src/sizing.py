@@ -50,6 +50,8 @@ def day_tuples(ohlc):
     ``ohlc`` needs columns open/high/low/close on a regular daily grid with no missing day
     (a gap would turn two days into one tuple).
     """
+    if getattr(ohlc.index, "tz", None) is None or str(ohlc.index.tz) != "UTC":
+        raise ValueError("ohlc index must be timezone-aware UTC")
     ohlc = ohlc.sort_index()
     steps = ohlc.index.to_series().diff().dropna()
     if (steps != pd.Timedelta(days=1)).any() or ohlc[["open", "high", "low", "close"]].isna().any().any():
@@ -58,17 +60,28 @@ def day_tuples(ohlc):
     return ohlc[["open", "high", "low", "close"]].div(prev, axis=0).iloc[1:]
 
 
-def demean_tuples(tuples, mean_return=None):
+def demean_tuples(tuples, mean_return=None, keep_open=False):
     """Remove the average daily close-to-close return from every tuple.
 
-    The close ratio becomes ``c - m`` (so the new mean return is exactly 0), and open, high and low
-    are multiplied by the same factor ``(c - m) / c``. The day's shape relative to its close is
-    kept. ``m`` defaults to the mean of ``close - 1`` over the tuples given. Returns
-    ``(demeaned tuples, m)``.
+    The close ratio becomes ``c - m`` (so the new mean return is exactly 0). ``m`` defaults to the
+    mean of ``close - 1`` over the tuples given. Returns ``(demeaned tuples, m)``.
+
+    - ``keep_open=False`` (notebook 11's pre-specified rule): open, high and low are multiplied by
+      the same factor ``(c - m) / c``, so the day's shape relative to its close is kept. Side effect:
+      the whole drift removal lands in the gap from the previous close to the open, and
+      open-to-close keeps the raw drift. A position bought at the open still earns that drift.
+    - ``keep_open=True``: the open stays as it is, high and low are scaled by the same factor and
+      then widened if needed so that ``low <= open, close <= high``. The drift is removed from the
+      open-to-close part, where a trade entered at the open is exposed to it.
     """
     m = float((tuples["close"] - 1).mean()) if mean_return is None else float(mean_return)
     k = (tuples["close"] - m) / tuples["close"]
-    return tuples.mul(k, axis=0), m
+    out = tuples.mul(k, axis=0)
+    if keep_open:
+        out["open"] = tuples["open"]
+        out["high"] = np.maximum(out["high"], out["open"])
+        out["low"] = np.minimum(out["low"], out["open"])
+    return out, m
 
 
 def stationary_bootstrap_indices(n_obs, n_paths, n_days, mean_block, rng):
@@ -278,8 +291,9 @@ def simulate(tuples, idx, coin, sigma, schemes, *, initial=10_000.0, fee=FEE_PER
     if log:
         trades = pd.DataFrame({k: np.concatenate([d[k] for d in log]) for k in log[0]})
     else:
-        trades = pd.DataFrame(columns=["path", "entry_day", "exit_day", "exit_code", "entry_px",
-                                       "exit_px"])
+        trades = pd.DataFrame(columns=["path", "entry_day", "exit_day", "exit_code", "gap_open",
+                                       "entry_px", "exit_px",
+                                       *[f"frac_{n}" for n in names], *[f"pnl_{n}" for n in names]])
     trades["exit_type"] = trades["exit_code"].map(_EXIT_CODES)
     trades = trades.drop(columns="exit_code").sort_values(["path", "exit_day"], ignore_index=True)
     return paths, trades, rec
@@ -288,6 +302,9 @@ def simulate(tuples, idx, coin, sigma, schemes, *, initial=10_000.0, fee=FEE_PER
 def simulate_buy_hold(tuples, idx, *, initial=10_000.0, fee=FEE_PER_SIDE, warmup=30):
     """Buy & hold on the same paths: buy at the open of day ``warmup`` (same first possible day as
     the active schemes), sell at the last close. Fee on both sides; notional + fee = equity.
+
+    ``mean_exposure`` is 1 on every invested day except the last, where the equity is already net
+    of the selling fee (exposure 1 / (1 - fee)); the effect on the average is about 1e-6.
 
     Returns per-path statistics with the same columns as ``simulate``.
     """

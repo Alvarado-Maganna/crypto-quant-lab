@@ -271,3 +271,70 @@ def test_buy_hold_equity_matches_its_summary():
     np.testing.assert_allclose(eq[:, -1], summary["final_equity"])
     np.testing.assert_allclose(max_drawdown(eq), summary["max_dd"])
     assert (eq[:, :5] == 10_000).all()
+
+
+def test_demean_keep_open_removes_drift_from_open_to_close():
+    rng = np.random.default_rng(6)
+    n = 2_000
+    c = 1.002 + rng.normal(0, 0.03, n)                  # strong positive drift
+    o = 1 + rng.normal(0, 0.0005, n)
+    h = np.maximum(o, c) * (1 + rng.uniform(0, 0.02, n))
+    l = np.minimum(o, c) * (1 - rng.uniform(0, 0.02, n))
+    t = pd.DataFrame({"open": o, "high": h, "low": l, "close": c})
+    same, _ = demean_tuples(t)                          # pre-specified rule: drift moves to the gap
+    assert (same["open"] - 1).mean() < -0.0015
+    assert (same["close"] / same["open"] - 1).mean() > 0.0015
+    kept, m = demean_tuples(t, keep_open=True)
+    assert (kept["close"] - 1).mean() == pytest.approx(0.0, abs=1e-15)
+    assert (kept["open"] == t["open"]).all()
+    assert abs((kept["close"] / kept["open"] - 1).mean()) < 1e-4
+    assert (kept["high"] >= kept[["open", "close"]].max(axis=1) - 1e-15).all()
+    assert (kept["low"] <= kept[["open", "close"]].min(axis=1) + 1e-15).all()
+
+
+def test_day_tuples_requires_utc():
+    df = ohlc_frame([[1, 1, 1, 100], [100, 110, 90, 105]])
+    with pytest.raises(ValueError):
+        day_tuples(df.tz_localize(None))
+
+
+def test_vol_target_uses_sigma_of_the_entry_day():
+    """Sigma changes every day; the size must use sigma[entry day], not the day before or after."""
+    n = 40
+    tuples = np.array([FLAT] * n)
+    idx = np.arange(n)[None, :]
+    coin = np.ones((1, n))
+    coin[0, 4] = 0.0                                    # decide at close 4 -> enter at open 5
+    sigma = np.linspace(0.2, 1.0, n)[None, :]
+    _, trades, _ = simulate(tuples, idx, coin, sigma, {"v": fraction_vol_target(0.1)}, warmup=2,
+                            fee=0.0)
+    tr = trades.iloc[0]
+    assert tr["entry_day"] == 5
+    assert tr["frac_v"] == pytest.approx(0.1 / sigma[0, 5])
+
+
+def test_entry_size_ignores_the_entry_days_own_bar():
+    """Changing high, low and close of the entry day must not change the size bought at its open."""
+    rng = np.random.default_rng(7)
+    c = 1 + rng.normal(0, 0.03, 60)
+    base = np.column_stack([np.ones(60), np.maximum(1, c) + 0.005, np.minimum(1, c) - 0.005, c])
+    idx = np.arange(60)[None, :]
+    coin = np.ones((1, 60))
+    coin[0, 39] = 0.0                                   # entry at the open of day 40
+    changed = base.copy()
+    changed[40, 1:] = [1.5, 0.99, 1.4]                  # day 40: huge high/close, low above stop
+    schemes = {"v": fraction_vol_target(0.1), "r": fraction_fixed_risk(0.01, 0.05)}
+    out = []
+    for t in (base, changed):
+        sig = path_sigma(t[idx, 3], 30)
+        _, trades, _ = simulate(t, idx, coin, sig, schemes, warmup=30)
+        out.append(trades.iloc[0])
+    assert out[0]["entry_day"] == out[1]["entry_day"] == 40
+    assert out[0]["frac_v"] == out[1]["frac_v"] and out[0]["frac_r"] == out[1]["frac_r"]
+
+
+def test_simulate_with_no_trades_keeps_all_columns():
+    tuples = np.array([FLAT] * 5)
+    _, trades, _ = simulate(tuples, np.arange(5)[None, :], np.ones((1, 5)), np.full((1, 5), 0.5),
+                            {"a": fraction_all_in}, warmup=2)
+    assert trades.empty and {"gap_open", "frac_a", "pnl_a", "exit_type"} <= set(trades.columns)

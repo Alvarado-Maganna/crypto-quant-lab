@@ -48,6 +48,10 @@ realized exposure.
 | Time-weighted exposure | 64.6% | 13.6% | 13.8% | 100% |
 
 - Demeaned: P(ruin) all-in 64.9% vs fixed risk 0.03%; median final equity 5,634 vs 9,489.
+- Reviewer finding: the pre-specified demean moves the drift removal into the open gap (mean gap
+  −13.98 bps, open→close still +13.98 bps), which gives trades entered at the open a small hidden
+  edge. Post-inspection sensitivity with the open kept: P(ruin) all-in 68.9% vs fixed risk 0.07%;
+  median final equity 5,044 vs 9,282 (buy & hold 5,146). The direction of every conclusion holds.
 - Stops (fixed risk): realized loss median 1.04% of equity (max 1.09%) at 0 bps, 1.23% at 100 bps;
   2 gap fills out of 522,111 stops (daily bars cannot see intraday moves).
 - Losing streaks: median longest 11 trades; with a 72.0% loss rate the reference is
@@ -63,9 +67,11 @@ realized exposure.
   a fixed rule on all-in max DD (paths 303, 9229 and 0).
 
 ## 6. Bias checklist
-- [x] No look-ahead (truncation tests; σ30 at entry uses the 30 returns before the entry day)
+- [x] No look-ahead: truncation tests catch use of later days; unit tests cover same-day leaks
+  (σ30 at entry uses the 30 returns before the entry day; the entry day's bar does not change the size)
 - [ ] No survivorship bias: not applicable (one asset), but the asset is BTC, the survivor
-- [x] Costs: fees and slippage included; daily bars understate real stop slippage
+- [x] Costs: fees and slippage included; daily bars understate real stop slippage; the 100 bps stress applies
+  only to stops filled at the stop price (entries, time exits and gap fills pay fees only)
 - [x] Variants counted: 4 schemes × 2 resamplings × 2 return versions × 2 slippages, all reported;
   1 post-inspection check, labelled
 
