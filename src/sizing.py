@@ -151,7 +151,7 @@ def fraction_vol_target(sigma_target):
 
 def simulate(tuples, idx, coin, sigma, schemes, *, initial=10_000.0, fee=FEE_PER_SIDE,
              stop_pct=0.05, max_hold=20, p_entry=0.20, warmup=30, slippage=0.0,
-             record_path=None):
+             record_path=None, quantiles=None):
     """Run every sizing scheme on the same paths, entry dates and exits.
 
     ``tuples`` (n_obs, 4) are the day tuples; ``idx`` (n_paths, n_days) says which tuple each
@@ -172,7 +172,11 @@ def simulate(tuples, idx, coin, sigma, schemes, *, initial=10_000.0, fee=FEE_PER
 
     Entries and exits do not depend on the size, so every scheme trades on the same days.
     Returns ``(paths, trades, record)``: per-path statistics per scheme, one row per trade, and
-    the daily equity / exposure of ``record_path`` (or None).
+    a dict (or None if nothing is recorded) with:
+    - ``equity`` / ``exposure``: the daily values of ``record_path``, shape (n_schemes, n_days)
+      for one path index, or (n_schemes, len(record_path), n_days) for a list of indices;
+    - ``equity_quantiles``: if ``quantiles`` is given, the daily quantiles of equity across all
+      paths, shape (n_schemes, len(quantiles), n_days).
     """
     tuples = np.asarray(tuples, dtype=float)
     n_paths, n_days = idx.shape
@@ -195,8 +199,13 @@ def simulate(tuples, idx, coin, sigma, schemes, *, initial=10_000.0, fee=FEE_PER
     stop_px = np.zeros(n_paths)
     entry_day = np.full(n_paths, -1, dtype=np.int64)
     level = np.ones(n_paths)                    # previous close
-    rec = None if record_path is None else {"equity": np.zeros((n_s, n_days)),
-                                            "exposure": np.zeros((n_s, n_days))}
+    rec = {}
+    rec_idx = None if record_path is None else np.atleast_1d(record_path)
+    if rec_idx is not None:
+        rec["equity"] = np.zeros((n_s, len(rec_idx), n_days))
+        rec["exposure"] = np.zeros((n_s, len(rec_idx), n_days))
+    if quantiles is not None:
+        rec["equity_quantiles"] = np.zeros((n_s, len(quantiles), n_days))
     log = []
 
     for t in range(n_days):
@@ -247,14 +256,20 @@ def simulate(tuples, idx, coin, sigma, schemes, *, initial=10_000.0, fee=FEE_PER
         exposure = qty * c / equity
         if t >= warmup:
             expo_sum += exposure
-        if rec is not None:
-            rec["equity"][:, t] = equity[:, record_path]
-            rec["exposure"][:, t] = exposure[:, record_path]
+        if rec_idx is not None:
+            rec["equity"][:, :, t] = equity[:, rec_idx]
+            rec["exposure"][:, :, t] = exposure[:, rec_idx]
+        if quantiles is not None:
+            rec["equity_quantiles"][:, :, t] = np.quantile(equity, quantiles, axis=1).T
 
         # 4. entry decision at the close
         if warmup - 1 <= t < n_days - 1:
             pending = ~in_pos & (coin[:, t] < p_entry)
         level = c
+
+    if rec_idx is not None and np.ndim(record_path) == 0:
+        rec["equity"], rec["exposure"] = rec["equity"][:, 0], rec["exposure"][:, 0]
+    rec = rec or None
 
     paths = {name: pd.DataFrame({
         "final_equity": cash[s], "max_dd": max_dd[s], "min_equity": min_eq[s],
@@ -276,6 +291,22 @@ def simulate_buy_hold(tuples, idx, *, initial=10_000.0, fee=FEE_PER_SIDE, warmup
 
     Returns per-path statistics with the same columns as ``simulate``.
     """
+    qty, level, equity = _buy_hold_parts(tuples, idx, initial, fee, warmup)
+    return pd.DataFrame({
+        "final_equity": equity[:, -1], "max_dd": max_drawdown(equity),
+        "min_equity": equity.min(axis=1),
+        "mean_exposure": (qty[:, None] * level[:, warmup:] / equity[:, warmup:]).mean(axis=1),
+        "n_trades": np.ones(len(idx), dtype=np.int64),
+    })
+
+
+def buy_hold_equity(tuples, idx, *, initial=10_000.0, fee=FEE_PER_SIDE, warmup=30):
+    """Daily buy & hold equity on every path, shape (n_paths, n_days), marked at the closes
+    (the last day already net of the selling fee). Same rules as ``simulate_buy_hold``."""
+    return _buy_hold_parts(tuples, idx, initial, fee, warmup)[2]
+
+
+def _buy_hold_parts(tuples, idx, initial, fee, warmup):
     tuples = np.asarray(tuples, dtype=float)
     o = tuples[idx, 0]
     c = tuples[idx, 3]
@@ -284,12 +315,7 @@ def simulate_buy_hold(tuples, idx, *, initial=10_000.0, fee=FEE_PER_SIDE, warmup
     qty = initial / (1 + fee) / (prev[:, warmup] * o[:, warmup])
     equity = np.where(np.arange(idx.shape[1]) >= warmup, qty[:, None] * level, initial)
     equity[:, -1] *= (1 - fee)                        # sold at the last close
-    return pd.DataFrame({
-        "final_equity": equity[:, -1], "max_dd": max_drawdown(equity),
-        "min_equity": equity.min(axis=1),
-        "mean_exposure": (qty[:, None] * level[:, warmup:] / equity[:, warmup:]).mean(axis=1),
-        "n_trades": np.ones(len(idx), dtype=np.int64),
-    })
+    return qty, level, equity
 
 
 # --- 6. Path statistics --------------------------------------------------------------------------
@@ -299,6 +325,13 @@ def max_drawdown(equity):
     equity = np.asarray(equity, dtype=float)
     peak = np.maximum.accumulate(equity, axis=-1)
     return (1 - equity / peak).max(axis=-1)
+
+
+def max_drawdown_day(equity):
+    """Index of the day on which the largest drawdown reaches its bottom (along the last axis)."""
+    equity = np.asarray(equity, dtype=float)
+    peak = np.maximum.accumulate(equity, axis=-1)
+    return (1 - equity / peak).argmax(axis=-1)
 
 
 def required_recovery(loss):

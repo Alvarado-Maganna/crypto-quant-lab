@@ -50,9 +50,17 @@ realized exposure.
 - Demeaned: P(ruin) all-in 64.9% vs fixed risk 0.03%; median final equity 5,634 vs 9,489.
 - Stops (fixed risk): realized loss median 1.04% of equity (max 1.09%) at 0 bps, 1.23% at 100 bps;
   2 gap fills out of 522,111 stops (daily bars cannot see intraday moves).
-- Losing streaks: median longest 11 trades vs median log2(n) 6.2 (loss rate 72.0%).
+- Losing streaks: median longest 11 trades; with a 72.0% loss rate the reference is
+  log_(1/p)(n(1−p)) ≈ 9.3 (log2(n) = 6.2 assumes a 50% loss rate).
 - Vol targeting vs fixed risk, paired mean Δ max DD: pre-specified −0.47 pp (block) / −1.35 pp
-  (i.i.d., lower exposure); exposure-matched −0.65 pp (block) / +0.42 pp (i.i.d.).
+  (i.i.d., lower exposure); exposure-matched −0.65 pp (block) / +0.42 pp (i.i.d.). The matched block gain is
+  4.1% of the 16.1% median drawdown; the narrow intervals are Monte Carlo precision over one history.
+- Vol targeting's risk per stop is not fixed: up to 4.11% of equity (p99 2.16%) vs 1.09% max for
+  fixed risk.
+- Volatility drag: demeaned buy & hold median final equity 5,153 with a zero mean daily return;
+  σ²/2 = 6.06 bps/day vs a measured mean log return of −6.14 bps.
+- Post-inspection charts: equity fan charts (raw and demeaned) and three example paths picked by
+  a fixed rule on all-in max DD (paths 303, 9229 and 0).
 
 ## 6. Bias checklist
 - [x] No look-ahead (truncation tests; σ30 at entry uses the 30 returns before the entry day)

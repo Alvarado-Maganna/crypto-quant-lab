@@ -4,7 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.sizing import (EXIT_END, EXIT_STOP, EXIT_TIME, day_tuples, demean_tuples,
+from src.sizing import (EXIT_END, EXIT_STOP, EXIT_TIME, buy_hold_equity, day_tuples,
+                        demean_tuples, max_drawdown_day,
                         fraction_all_in, fraction_fixed_risk, fraction_vol_target,
                         iid_bootstrap_indices, longest_losing_streak, max_drawdown, path_sigma,
                         required_recovery, simulate, simulate_buy_hold, size,
@@ -234,3 +235,39 @@ def test_longest_losing_streak():
                            "pnl": [-1, -1, 1, -1, -1, -1, 1, 1, -1]})
     out = longest_losing_streak(trades, n_paths=4, pnl_col="pnl")
     assert out.tolist() == [3, 0, 1, 0]               # path 3 has no trade
+
+
+def test_max_drawdown_day_is_the_bottom():
+    assert max_drawdown_day([100, 120, 60, 130, 117]) == 2
+    assert max_drawdown_day([[1, 2, 3], [3, 1, 2]]).tolist() == [0, 1]
+
+
+def test_recorded_paths_and_quantiles_match_single_path_runs():
+    rng = np.random.default_rng(4)
+    n_paths, n_days = 50, 120
+    c = 1 + rng.normal(0, 0.03, 300)
+    tuples = np.column_stack([np.ones(300), c + 0.01, np.minimum(1, c) - 0.01, c])
+    idx = rng.integers(0, 300, (n_paths, n_days))
+    coin = rng.random((n_paths, n_days))
+    sigma = np.full((n_paths, n_days), 0.5)
+    schemes = {"a": fraction_all_in, "r": fraction_fixed_risk(0.01, 0.05)}
+    _, _, one = simulate(tuples, idx, coin, sigma, schemes, record_path=7)
+    _, _, many = simulate(tuples, idx, coin, sigma, schemes, record_path=[3, 7],
+                          quantiles=[0.1, 0.5, 0.9])
+    np.testing.assert_allclose(many["equity"][:, 1], one["equity"])
+    assert many["equity_quantiles"].shape == (2, 3, n_days)
+    _, _, every = simulate(tuples, idx, coin, sigma, schemes, record_path=list(range(n_paths)))
+    np.testing.assert_allclose(many["equity_quantiles"][:, 1],
+                               np.median(every["equity"], axis=1))
+
+
+def test_buy_hold_equity_matches_its_summary():
+    rng = np.random.default_rng(5)
+    c = 1 + rng.normal(0, 0.03, 100)
+    tuples = np.column_stack([np.ones(100), c + 0.01, np.minimum(1, c) - 0.01, c])
+    idx = rng.integers(0, 100, (20, 60))
+    eq = buy_hold_equity(tuples, idx, warmup=5)
+    summary = simulate_buy_hold(tuples, idx, warmup=5)
+    np.testing.assert_allclose(eq[:, -1], summary["final_equity"])
+    np.testing.assert_allclose(max_drawdown(eq), summary["max_dd"])
+    assert (eq[:, :5] == 10_000).all()
